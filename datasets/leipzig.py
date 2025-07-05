@@ -189,23 +189,6 @@ class LeipzigCSVJSONDownloader:
 
             file_size = file_path.stat().st_size
             logger.debug(f"\t✅ {filename} ({file_size:,} byte)")
-
-            # META resources
-            resource_meta = {
-                "name": resource_name,
-                "url": url,
-                "format": resource_format,
-                "description": resource.get("description", ""),
-                "created": resource.get("created"),
-                "last_modified": resource.get("last_modified"),
-                "file_size": file_size,
-                "download_timestamp": datetime.now().isoformat(),
-            }
-
-            meta_file = dataset_dir / f"{filename}.meta.json"
-            with open(meta_file, "w", encoding="utf-8") as f:
-                json.dump(resource_meta, f, ensure_ascii=False, indent=2)
-
             return True
 
         except Exception as e:
@@ -236,7 +219,7 @@ class LeipzigCSVJSONDownloader:
                 "name": package_data.get("name"),
                 "organization": organization,
                 "author": package_data.get("author"),
-                "notes": package_data.get("notes"),
+                "description": package_data.get("notes"),
                 "license_title": package_data.get("license_title"),
                 "metadata_created": package_data.get("metadata_created"),
                 "metadata_modified": package_data.get("metadata_modified"),
@@ -252,19 +235,21 @@ class LeipzigCSVJSONDownloader:
                 json.dump(package_meta, f, ensure_ascii=False, indent=2)
 
             # Download DATASET
+            json_resources = [d for d in target_resources if d.get("format") == "JSON"]
+            other_resources = [d for d in target_resources if d.get("format") != "JSON"]
+            sorted_target_resources = json_resources + other_resources
+
             success_count = 0
-            for resource in target_resources:
+            for resource in sorted_target_resources:
                 if self.download_resource(resource, dataset_dir):
                     success_count += 1
                     self.stats["successful_downloads"] += 1
+                    break
                 else:
                     self.stats["failed_downloads"] += 1
 
                 time.sleep(0.5)
 
-            logger.debug(
-                f"\t✅ {success_count}/{len(target_resources)} resources downloaded"
-            )
             return success_count > 0
 
         except Exception as e:
@@ -272,23 +257,6 @@ class LeipzigCSVJSONDownloader:
             return False
 
     def create_summary_report(self):
-        report = {
-            "download_info": {
-                "timestamp": datetime.now().isoformat(),
-                "source": "https://opendata.leipzig.de",
-                "filter": "CSV and JSON formats only",
-                "formats_included": list(self.target_formats),
-            },
-            "statistics": self.stats,
-            "output_directory": str(self.output_dir.absolute()),
-        }
-
-        # JSON отчет
-        with open(
-            self.output_dir / "download_summary.json", "w", encoding="utf-8"
-        ) as f:
-            json.dump(report, f, ensure_ascii=False, indent=2)
-
         text_report = f"""
 Leipzig Open Data CSV & JSON Download Summary
 ============================================
@@ -315,10 +283,6 @@ Filter: CSV and JSON formats only
 - metadata.json - dataset metadata
 - *.meta.json - metadata for each file
 """
-
-        with open(self.output_dir / "README.txt", "w", encoding="utf-8") as f:
-            f.write(text_report)
-
         logger.info(text_report)
 
     def download_csv_json_only(self, limit=None):

@@ -183,4 +183,5 @@ config/local.py
 
 datasets/*
 datasets/!*.py
+!datasets/utils.py
 !datasets/open_data_portal_stadt_chemnitz.csv

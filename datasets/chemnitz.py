@@ -18,7 +18,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("./chemnitz_opendata_download.log"),
+        logging.FileHandler("../logs/chemnitz_opendata_download.log"),
         logging.StreamHandler(sys.stdout),
     ],
 )
@@ -76,8 +76,13 @@ class ChemnitzDataDownloader:
             dataset_dir.mkdir(exist_ok=True)
 
             # Save META
+            package_meta = {
+                "id": service_info.get("serviceItemId"),
+                "title": title,
+                "city": "Chemnitz",
+            }
             with open(dataset_dir / "metadata.json", "w", encoding="utf-8") as f:  # type: SupportsWrite[str]
-                json.dump(service_info, f, ensure_ascii=False, indent=2)
+                json.dump(package_meta, f, ensure_ascii=False, indent=2)
 
             # DATASET
             layers = service_info.get("layers", [])
@@ -126,8 +131,11 @@ class ChemnitzDataDownloader:
                             if format_name == "geojson":
                                 try:
                                     data = response.json()
+                                    features = data.get("features", [])
                                     with open(file_path, "w", encoding="utf-8") as f:
-                                        json.dump(data, f, ensure_ascii=False, indent=2)
+                                        json.dump(
+                                            features, f, ensure_ascii=False, indent=2
+                                        )
                                     logger.debug(f"\t\t✓ Saved as {file_name}")
                                     layer_downloaded = True
                                     break

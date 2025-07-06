@@ -19,7 +19,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(threadName)-10s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("dresden_opendata_download.log"),
+        logging.FileHandler("../logs/dresden_opendata_download.log"),
         logging.StreamHandler(sys.stdout),
     ],
 )
@@ -412,8 +412,10 @@ class DresdenOpenDataDownloader:
         # Extract dataset information
         title = "Unknown Dataset"
         dataset_uri = None
+        keywords = []
+        description = None
 
-        # Find dataset URI and title
+        # Find dataset URI, title, keywords, and description
         for uri, predicates in dataset_metadata.items():
             if (
                 uri.startswith("http")
@@ -427,11 +429,28 @@ class DresdenOpenDataDownloader:
                     for t in rdf_types
                 ):
                     dataset_uri = uri
+
+                    # Extract title
                     title_info = predicates.get("http://purl.org/dc/terms/title", [])
                     if title_info:
                         title = title_info[0].get("value", title)
-                    break
 
+                    # Extract keywords as an array
+                    keyword_info = predicates.get(
+                        "http://www.w3.org/ns/dcat#keyword", []
+                    )
+                    keywords = [
+                        kw.get("value") for kw in keyword_info if kw.get("value")
+                    ]
+
+                    # Extract description
+                    description_info = predicates.get(
+                        "http://purl.org/dc/terms/description", []
+                    )
+                    if description_info:
+                        description = description_info[0].get("value")
+
+                    break
         if not dataset_uri:
             logger.warning(f"Dataset URI not found in metadata {context_id}/{entry_id}")
             return False
@@ -448,11 +467,11 @@ class DresdenOpenDataDownloader:
         with open(metadata_file, "w", encoding="utf-8") as f:
             json.dump(
                 {
-                    "context_id": context_id,
-                    "entry_id": entry_id,
                     "dataset_uri": dataset_uri,
                     "title": title,
-                    "metadata": dataset_metadata,
+                    "description": description,
+                    "keywords": keywords,
+                    "city": "Dresden",
                 },
                 f,
                 indent=2,

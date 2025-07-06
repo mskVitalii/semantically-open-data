@@ -27,7 +27,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("../berlin_opendata_download.log"),
+        logging.FileHandler("../logs/berlin_opendata_download.log"),
         logging.StreamHandler(sys.stdout),
     ],
 )
@@ -50,7 +50,7 @@ class BerlinOpenDataDownloader:
         """
         self.base_url = "https://datenregister.berlin.de"
         self.api_url = f"{self.base_url}/api/3/action"
-        self.output_dir = Path(output_dir)
+        self.output_dir = Path(__file__).parent / Path(output_dir)
         self.max_workers = max_workers
         self.delay = delay
         self.session = requests.Session()
@@ -59,7 +59,7 @@ class BerlinOpenDataDownloader:
         )
 
         # Create output directory
-        self.output_dir.mkdir(exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Thread-safe statistics
         self.stats = {
@@ -332,6 +332,7 @@ class BerlinOpenDataDownloader:
                 self.update_stats("errors")
                 return False
 
+            meta_id = package.get("id")
             title = package.get("title", package_name)
             resources = package.get("resources", [])
 
@@ -357,8 +358,20 @@ class BerlinOpenDataDownloader:
 
         try:
             if not metadata_file.exists():
+                package_meta = {
+                    "id": meta_id,
+                    "title": title,
+                    "groups": [
+                        group.get("title") for group in package.get("groups", [])
+                    ],
+                    "organization": package.get("organization", {}).get("title"),
+                    "tags": [tag.get("name") for tag in package.get("tags", [])],
+                    "description": package.get("notes"),
+                    "city": "Berlin",
+                }
+
                 with open(metadata_file, "w", encoding="utf-8") as f:  # type: SupportsWrite[str]
-                    json.dump(package, f, indent=2, ensure_ascii=False)
+                    json.dump(package_meta, f, indent=2, ensure_ascii=False)
 
             logger.debug(f"Processing dataset: {title} ({len(resources)} resources)")
         except Exception as e:
@@ -400,8 +413,7 @@ class BerlinOpenDataDownloader:
             if success_count > 0:
                 logger.info(f"Downloaded {success_count} files for: {title}")
             else:
-                # Delete metadata.json - not suitable dataset
-                safe_delete(metadata_file, logger)
+                # not suitable dataset
                 safe_delete(dataset_dir, logger)
 
             self.update_stats("datasets_processed")
@@ -532,8 +544,8 @@ def main():
     parser.add_argument(
         "--output-dir",
         "-o",
-        default="datasets/berlin",
-        help="Directory to save data (default: datasets/berlin)",
+        default="berlin",
+        help="Directory to save data (default: berlin)",
     )
     parser.add_argument(
         "--max-workers",
@@ -569,7 +581,7 @@ def main():
     except KeyboardInterrupt:
         logger.info("Download interrupted by user")
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        logger.error(f"Unexpected error: {e}", exc_info=e)
         sys.exit(1)
 
 

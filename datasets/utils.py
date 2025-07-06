@@ -7,12 +7,12 @@ def safe_delete(path: Path, logger: Logger):
     if path.exists():
         if path.is_file():
             path.unlink()
-            logger.debug(f"Удалён файл: {path}")
+            logger.debug(f"Deleted file: {path}")
         elif path.is_dir():
             shutil.rmtree(path)
             logger.debug(f"Deleted folder: {path}")
     else:
-        logger.debug(f"Путь не существует: {path}")
+        logger.debug(f"Path doesn't exist: {path}")
 
 
 def sanitize_filename(filename: str) -> str:

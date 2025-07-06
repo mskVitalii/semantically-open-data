@@ -171,7 +171,6 @@ $RECYCLE.BIN/
 *.db
 *.sqlite
 *.sqlite3
-logs/
 temp/
 tmp/
 cache/
@@ -181,7 +180,8 @@ config/local.py
 *.swp
 *.swo
 
-datasets/*
-datasets/!*.py
-!datasets/utils.py
-!datasets/open_data_portal_stadt_chemnitz.csv
+datasets/*/
+embeddings/*/
+
+logs/*
+!logs/.gitkeep

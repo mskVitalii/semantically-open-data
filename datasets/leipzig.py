@@ -15,7 +15,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("./leipzig_opendata_download.log"),
+        logging.FileHandler("../logs/leipzig_opendata_download.log"),
         logging.StreamHandler(sys.stdout),
     ],
 )
@@ -216,11 +216,9 @@ class LeipzigCSVJSONDownloader:
             package_meta = {
                 "id": package_data.get("id"),
                 "title": package_title,
-                "name": package_data.get("name"),
                 "organization": organization,
                 "author": package_data.get("author"),
                 "description": package_data.get("notes"),
-                "license_title": package_data.get("license_title"),
                 "metadata_created": package_data.get("metadata_created"),
                 "metadata_modified": package_data.get("metadata_modified"),
                 "tags": [tag.get("name") for tag in package_data.get("tags", [])],
@@ -228,7 +226,7 @@ class LeipzigCSVJSONDownloader:
                     group.get("title") for group in package_data.get("groups", [])
                 ],
                 "url": f"{self.base_url}/dataset/{package_data.get('name')}",
-                "download_timestamp": datetime.now().isoformat(),
+                "city": "Leipzig",
             }
 
             with open(dataset_dir / "metadata.json", "w", encoding="utf-8") as f:

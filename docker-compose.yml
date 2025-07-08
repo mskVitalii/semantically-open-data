@@ -3,29 +3,66 @@ services:
     image: qdrant/qdrant:v1.14.1
     container_name: qdrant
     ports:
-      - "6333:6333"
+      - "6333:6333"  # HTTP API
+      - "6334:6334"  # gRPC API
     volumes:
       - ./qdrant_data:/qdrant/storage
     environment:
+      # gRPC configuration
       - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__ENABLE_TLS=false
+      # Performance optimizations
+      - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=0  # Use all available cores
+      - QDRANT__STORAGE__PERFORMANCE__MAX_OPTIMIZATION_THREADS=2
+      # Optional: increase payload index threshold for better performance
+      - QDRANT__STORAGE__OPTIMIZERS__PAYLOAD_INDEX_THRESHOLD=20000
     restart: unless-stopped
-
-  app:
-    build: .
-    container_name: app
-    depends_on:
-      - qdrant
-    environment:
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
-      - HF_HOME=/app/cache
-      - ENV=production
-    volumes:
-      - ./cache:/app/cache
-      - ./data:/app/data
-    command: python main.py
+    healthcheck:
+      test: ["CMD", "timeout", "1", "bash", "-c", "</dev/tcp/localhost/6333"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    # Resource limits (adjust based on your system)
     deploy:
       resources:
         limits:
-          memory: 16G
+          memory: 4G
+        reservations:
+          memory: 2G
+    networks:
+      - rag_network
+
+  app:
+    build: .
+    container_name: rag_app
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_HTTP_PORT=6333
+      - QDRANT_GRPC_PORT=6334
+      - USE_GRPC=true  # Enable gRPC by default
+      - ENV=production
+    volumes:
+      - ./logs:/app/logs
+      - ./datasets:/app/datasets
+      - ./cache:/app/cache
     restart: unless-stopped
+    # Increase timeout for model loading
+#    stop_grace_period: 60s
+    networks:
+      - rag_network
+
+# Optional: Add network for better isolation
+networks:
+  rag_network:
+    driver: bridge
+
+# Named volumes for better management
+volumes:
+  qdrant_data:
+    driver: local
+  cache:
+    driver: local

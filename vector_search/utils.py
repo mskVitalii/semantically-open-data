@@ -10,19 +10,14 @@ from pathlib import Path
 from typing import List, Dict, Any, Union
 import logging
 import re
-import sys
 import gzip
 import bz2
 import lzma
 import tarfile
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
-logger = logging.getLogger(__name__)
+from infrastructure.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 # =============================================================================

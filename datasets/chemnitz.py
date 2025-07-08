@@ -2,7 +2,6 @@ import csv
 import json
 import logging
 import os
-import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -10,19 +9,12 @@ from typing import TYPE_CHECKING
 import requests
 
 from datasets.utils import sanitize_filename
+from infrastructure.logger import get_logger
 
 if TYPE_CHECKING:
     from _typeshed import SupportsWrite  # noqa: F401
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("../logs/chemnitz_opendata_download.log"),
-        logging.StreamHandler(sys.stdout),
-    ],
-)
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ChemnitzDataDownloader:

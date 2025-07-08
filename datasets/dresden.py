@@ -1,6 +1,5 @@
 import json
 import logging
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -13,17 +12,9 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from datasets.utils import sanitize_filename
+from infrastructure.logger import get_logger
 
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(threadName)-10s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("../logs/dresden_opendata_download.log"),
-        logging.StreamHandler(sys.stdout),
-    ],
-)
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class DresdenOpenDataDownloader:

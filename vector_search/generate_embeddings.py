@@ -1,5 +1,3 @@
-import logging
-import sys
 from pathlib import Path
 from typing import Dict, Any, Tuple
 import json
@@ -7,18 +5,10 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 import multiprocessing
 import time
 
+from infrastructure.logger import get_logger
 from utils import extract_comprehensive_text
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("../logs/embeddings_generation.log"),
-        logging.StreamHandler(sys.stdout),
-    ],
-)
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def process_single_dataset(dataset_path: Path) -> Tuple[str, Dict[str, Any]]:

@@ -181,7 +181,7 @@ config/local.py
 *.swo
 
 datasets/*/
-embeddings/*/
+vector_search/*/
 qdrant_data
 
 logs/*

@@ -1,7 +1,6 @@
 import logging
 import os
 import json
-import sys
 import time
 import requests
 from pathlib import Path
@@ -9,17 +8,9 @@ from urllib.parse import urlparse, unquote
 from datetime import datetime
 
 from datasets.utils import sanitize_filename
+from infrastructure.logger import get_logger
 
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("../logs/leipzig_opendata_download.log"),
-        logging.StreamHandler(sys.stdout),
-    ],
-)
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class LeipzigCSVJSONDownloader:

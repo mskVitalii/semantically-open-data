@@ -241,7 +241,7 @@ class BerlinOpenDataDownloader:
                 )
                 return self.download_file_playwright(url, filepath)
 
-            response = self.session.get(url, stream=True, timeout=30)
+            response = self.session.get(url, stream=True, timeout=5)
             response.raise_for_status()
 
             # Check content type
@@ -289,19 +289,16 @@ class BerlinOpenDataDownloader:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
                 accept_downloads=True,
-                # Устанавливаем User-Agent
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             )
             page = context.new_page()
 
             try:
-                # Ждём начала скачивания
                 with page.expect_download() as download_info:
                     page.goto(url)
-                    # Ждём до 30 секунд
+                    # Waiting max 5 seconds
                     download = download_info.value
 
-                # Сохраняем файл
                 download.save_as(filepath)
 
                 logger.debug(f"Downloaded via Playwright: {filepath.name}")
@@ -409,6 +406,7 @@ class BerlinOpenDataDownloader:
 
                 if self.download_file(url, filepath):
                     success_count += 1
+                    break
 
             if success_count > 0:
                 logger.info(f"Downloaded {success_count} files for: {title}")
@@ -444,7 +442,7 @@ class BerlinOpenDataDownloader:
                     f"Progress: {processed}/{total} ({percentage:.1f}%) - Files: {files} - Errors: {errors}"
                 )
 
-    def download_all_metadata(self):
+    def download_all_datasets(self):
         """Download all Berlin datasets using parallel processing"""
         logger.info("Starting Berlin Open Data download with parallel processing")
 
@@ -507,34 +505,6 @@ class BerlinOpenDataDownloader:
         )
         logger.info(f"Data saved to: {self.output_dir.absolute()}")
 
-    def download_specific_datasets(self, package_names: List[str]):
-        """
-        Download specific datasets by name
-
-        Args:
-            package_names: List of package names to download
-        """
-        logger.info(f"Downloading {len(package_names)} specific datasets")
-        self.stats["datasets_found"] = len(package_names)
-
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=self.max_workers
-        ) as executor:
-            future_to_package = {
-                executor.submit(self.process_dataset, package): package
-                for package in package_names
-            }
-
-            for future in concurrent.futures.as_completed(future_to_package):
-                package = future_to_package[future]
-                try:
-                    future.result()
-                except Exception as e:
-                    logger.error(f"Exception processing {package}: {e}")
-                    self.update_stats("errors")
-
-        self.print_progress()
-
 
 def main():
     """Main function"""
@@ -576,7 +546,7 @@ def main():
             output_dir=args.output_dir, max_workers=args.max_workers, delay=args.delay
         )
 
-        downloader.download_all_metadata()
+        downloader.download_all_datasets()
 
     except KeyboardInterrupt:
         logger.info("Download interrupted by user")

@@ -11,6 +11,10 @@ from typing import List, Dict, Any, Union
 import logging
 import re
 import sys
+import gzip
+import bz2
+import lzma
+import tarfile
 
 # Configure logging
 logging.basicConfig(
@@ -284,33 +288,55 @@ def get_csv_example(file_path: Union[str, Path], row_index: int = 0) -> Dict[str
         logger.error(f"CSV file not found: {file_path}")
         raise FileNotFoundError(f"CSV file not found: {file_path}")
 
-    try:
-        # Read minimal data (just the row we need + headers)
-        df = pd.read_csv(file_path, nrows=row_index + 1)
+    # List of encodings to try
+    encodings = [
+        "utf-8",
+        "utf-16",
+        "utf-16-le",
+        "utf-16-be",
+        "latin-1",
+        "iso-8859-1",
+        "cp1252",
+    ]
 
-        if df.empty or len(df) <= row_index:
-            logger.warning(f"Row index {row_index} not found in CSV {file_path}")
-            raise IndexError(f"Row index {row_index} not found in CSV")
+    for encoding in encodings:
+        try:
+            # Read minimal data (just the row we need + headers)
+            df = pd.read_csv(file_path, nrows=row_index + 1, encoding=encoding)
 
-        # Get the specified row as dictionary
-        row_data = df.iloc[row_index].to_dict()
+            if df.empty or len(df) <= row_index:
+                logger.warning(f"Row index {row_index} not found in CSV {file_path}")
+                raise IndexError(f"Row index {row_index} not found in CSV")
 
-        # Clean up NaN values
-        cleaned_data = {}
-        for key, value in row_data.items():
-            if pd.notna(value):
-                cleaned_data[key] = value
-            else:
-                cleaned_data[key] = None
+            # Get the specified row as dictionary
+            row_data = df.iloc[row_index].to_dict()
 
-        logger.debug(
-            f"Extracted CSV example from {file_path.name}: {len(cleaned_data)} fields"
-        )
-        return cleaned_data
+            # Clean up NaN values
+            cleaned_data = {}
+            for key, value in row_data.items():
+                if pd.notna(value):
+                    cleaned_data[key] = value
+                else:
+                    cleaned_data[key] = None
 
-    except Exception as e:
-        logger.error(f"Error extracting CSV example from {file_path}: {e}")
-        raise
+            logger.debug(
+                f"Extracted CSV example from {file_path.name} using {encoding} encoding: {len(cleaned_data)} fields"
+            )
+            return cleaned_data
+
+        except UnicodeDecodeError:
+            logger.debug(f"Failed to decode {file_path.name} with {encoding}")
+            continue
+        except Exception as e:
+            # If it's not an encoding error, raise it
+            logger.error(f"Error extracting CSV example from {file_path}: {e}")
+            raise
+
+    # If we've tried all encodings and none worked
+    logger.error(
+        f"Could not decode {file_path} with any of the attempted encodings: {encodings}"
+    )
+    raise ValueError("Unable to decode CSV file with any of the attempted encodings")
 
 
 def get_json_example(
@@ -338,9 +364,118 @@ def get_json_example(
         raise FileNotFoundError(f"JSON file not found: {file_path}")
 
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        # Check file type by reading magic bytes
+        with open(file_path, "rb") as f:
+            magic_bytes = f.read(4)
+            f.seek(0)
 
+        # Check if it's a tar.gz file (gzipped tar)
+        if magic_bytes[:2] == b"\x1f\x8b":
+            # Could be gzip or tar.gz, need to check further
+            try:
+                with tarfile.open(file_path, "r:gz") as tar:
+                    # It's a tar.gz file
+                    logger.debug(f"Detected tar.gz archive: {file_path.name}")
+
+                    # Find JSON files in the archive
+                    json_members = [
+                        m
+                        for m in tar.getmembers()
+                        if m.name.endswith(".json") and m.isfile()
+                    ]
+
+                    if not json_members:
+                        raise ValueError(
+                            f"No JSON files found in tar.gz archive {file_path.name}"
+                        )
+
+                    # Use the first JSON file found
+                    json_member = json_members[0]
+                    logger.debug(f"Extracting {json_member.name} from archive")
+
+                    # Extract and read the JSON file
+                    json_file = tar.extractfile(json_member)
+                    if json_file is None:
+                        raise ValueError(
+                            f"Could not extract {json_member.name} from archive"
+                        )
+
+                    content = json_file.read().decode("utf-8")
+                    data = json.loads(content)
+
+            except tarfile.ReadError:
+                # Not a tar file, treat as regular gzip
+                logger.debug(
+                    f"Not a tar.gz, treating as gzipped JSON: {file_path.name}"
+                )
+                with gzip.open(file_path, "rt", encoding="utf-8") as f:
+                    data = json.load(f)
+
+        elif magic_bytes[:3] == b"BZh" or file_path.suffix == ".bz2":
+            logger.debug(f"Detected bzip2 compressed file: {file_path.name}")
+            with bz2.open(file_path, "rt", encoding="utf-8") as f:
+                data = json.load(f)
+
+        elif magic_bytes[:6] == b"\xfd7zXZ\x00" or file_path.suffix in [".xz", ".lzma"]:
+            logger.debug(f"Detected xz/lzma compressed file: {file_path.name}")
+            with lzma.open(file_path, "rt", encoding="utf-8") as f:
+                data = json.load(f)
+
+        else:
+            # Not compressed - try different encodings
+            encodings = [
+                "utf-8",
+                "utf-16-le",  # UTF-16 Little Endian without BOM
+                "utf-16-be",  # UTF-16 Big Endian without BOM
+                "utf-16",  # UTF-16 with BOM
+                "latin-1",
+                "iso-8859-1",
+                "cp1252",
+            ]
+
+            data = None
+            last_error = None
+
+            for encoding in encodings:
+                try:
+                    with open(file_path, "r", encoding=encoding) as f:
+                        content = f.read()
+                        if not content.strip():
+                            raise ValueError(f"File {file_path.name} is empty")
+                        data = json.loads(content)
+                    logger.debug(
+                        f"Successfully loaded {file_path.name} with {encoding} encoding"
+                    )
+                    break
+                except UnicodeDecodeError as e:
+                    last_error = e
+                    logger.debug(
+                        f"Failed to decode {file_path.name} with {encoding}: {str(e)}"
+                    )
+                    continue
+                except json.JSONDecodeError as e:
+                    last_error = e
+                    logger.debug(
+                        f"Failed to parse JSON from {file_path.name} with {encoding}: {str(e)}"
+                    )
+                    continue
+                except Exception as e:
+                    logger.error(
+                        f"Unexpected error reading {file_path.name} with {encoding}: {str(e)}"
+                    )
+                    raise
+
+            if data is None:
+                error_msg = (
+                    f"Could not load JSON from {file_path.name} with any encoding. "
+                )
+                if last_error:
+                    error_msg += (
+                        f"Last error: {type(last_error).__name__}: {str(last_error)}"
+                    )
+                raise ValueError(error_msg)
+
+        # Process the loaded JSON data
         if isinstance(data, list):
             if not data or len(data) <= object_index:
                 logger.warning(
@@ -373,54 +508,6 @@ def get_json_example(
     except Exception as e:
         logger.error(f"Error extracting JSON example from {file_path}: {e}")
         raise
-
-
-def get_data_examples_from_directory(
-    directory_path: Union[str, Path],
-) -> Dict[str, Dict[str, Any]]:
-    """
-    Extract example data from all CSV and JSON files in a directory
-
-    Args:
-        directory_path: Path to directory containing data files
-
-    Returns:
-        Dictionary mapping file names to their example data
-    """
-    directory = Path(directory_path)
-    examples = {}
-
-    if not directory.exists():
-        logger.error(f"Directory not found: {directory}")
-        raise FileNotFoundError(f"Directory not found: {directory}")
-
-    # Process CSV files
-    csv_count = 0
-    for csv_file in directory.glob("*.csv"):
-        try:
-            example = get_csv_example(csv_file)
-            examples[csv_file.name] = example
-            csv_count += 1
-        except Exception as e:
-            logger.warning(f"Failed to extract example from {csv_file}: {e}")
-
-    # Process JSON files (skip metadata.json)
-    json_count = 0
-    for json_file in directory.glob("*.json"):
-        if json_file.name == "metadata.json":
-            continue
-
-        try:
-            example = get_json_example(json_file)
-            examples[json_file.name] = example
-            json_count += 1
-        except Exception as e:
-            logger.warning(f"Failed to extract example from {json_file}: {e}")
-
-    logger.info(
-        f"Extracted examples from {csv_count} CSV and {json_count} JSON files in {directory.name}"
-    )
-    return examples
 
 
 # =============================================================================
@@ -608,7 +695,7 @@ def flatten_json_to_string(
 
 
 # =============================================================================
-# UTILITY FUNCTIONS FOR TESTING
+# MANUAL TESTING
 if __name__ == "__main__":
     import argparse
 

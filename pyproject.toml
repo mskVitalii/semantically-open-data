@@ -5,10 +5,16 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "einops>=0.8.1",
     "pandas>=2.3.0",
+    "peft>=0.16.0",
     "playwright>=1.53.0",
     "pytest>=8.4.1",
+    "qdrant-client>=1.14.1",
     "requests>=2.32.4",
+    "sentence-transformers>=5.0.0",
+    "torch>=2.7.1",
+    "tqdm>=4.67.1",
 ]
 
 [dependency-groups]

@@ -16,7 +16,6 @@ from utils import (
     get_json_schema,
     get_csv_example,
     get_json_example,
-    get_data_examples_from_directory,
     json_to_searchable_string,
     flatten_json_to_string,
     _extract_json_fields,
@@ -373,31 +372,6 @@ def test_get_json_example_primitive_value(temp_dir):
 
     with pytest.raises(ValueError):
         get_json_example(json_file)
-
-
-def test_get_data_examples_from_directory(temp_dir, sample_csv_data, sample_json_data):
-    """Test getting examples from all files in directory"""
-    # Create CSV file
-    csv_file = temp_dir / "data.csv"
-    sample_csv_data.to_csv(csv_file, index=False)
-
-    # Create JSON file
-    json_file = temp_dir / "data.json"
-    with open(json_file, "w") as f:
-        json.dump(sample_json_data, f)
-
-    # Create metadata.json (should be skipped)
-    metadata_file = temp_dir / "metadata.json"
-    with open(metadata_file, "w") as f:
-        json.dump({"title": "Test"}, f)
-
-    examples = get_data_examples_from_directory(temp_dir)
-
-    assert "data.csv" in examples
-    assert "data.json" in examples
-    assert "metadata.json" not in examples
-    assert examples["data.csv"]["name"] == "Alice"
-    assert examples["data.json"]["product"] == "Widget"
 
 
 # =============================================================================

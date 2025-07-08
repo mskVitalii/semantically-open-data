@@ -182,6 +182,7 @@ config/local.py
 
 datasets/*/
 embeddings/*/
+qdrant_data
 
 logs/*
 !logs/.gitkeep

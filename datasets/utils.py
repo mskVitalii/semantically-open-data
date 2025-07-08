@@ -36,7 +36,18 @@ def sanitize_filename(filename: str) -> str:
     return filename
 
 
-skip_formats = ["atom", "wms", "wfs", "wmts", "api", "html", "htm"]
+skip_formats = [
+    "atom",
+    "wms",
+    "wfs",
+    "wmts",
+    "api",
+    "html",
+    "htm",
+    "xlsx",
+    "xls",
+    "zip",
+]
 
-allowed_formats = ["csv", "json", "xlsx", "xls", "txt"]
+allowed_formats = ["csv", "json", "txt"]
 allowed_extensions = [".csv", ".json", ".xlsx", ".xls", ".txt"]

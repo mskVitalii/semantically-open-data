@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 # Import the module to test (assuming it's named text_extraction.py)
-from utils import (
+from embeddings_utils import (
     extract_comprehensive_text,
     extract_metadata_text,
     extract_data_content,

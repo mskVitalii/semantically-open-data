@@ -14,9 +14,17 @@ from qdrant_client.models import (
 import logging
 import sys
 
-from config.config import ENV
-from datasets.datasets_metadata import DatasetMetadata
-from vector_search.embedder import LocalJinaEmbedder
+from src.datasets.datasets_metadata import DatasetMetadata
+from src.infrastructure.config import (
+    ENV,
+    USE_GRPC,
+    QDRANT_GRPC_PORT,
+    QDRANT_HOST,
+    QDRANT_HTTP_PORT,
+    EMBEDDING_DIM,
+    COLLECTION_NAME,
+)
+from src.vector_search.embedder import LocalJinaEmbedder
 
 
 # Setup logging based on environment

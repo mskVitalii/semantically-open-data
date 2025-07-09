@@ -1,38 +1,34 @@
 import time
 
-from config.config import USE_GRPC
-from datasets.datasets_metadata import DatasetMetadata
-from infrastructure.logger import get_logger
-from vector_search.vector_db import VectorDB
+from src.datasets.datasets_metadata import DatasetMetadata
+from src.datasets_api.router import v1_router
+from src.infrastructure.config import USE_GRPC
+from src.infrastructure.logger import get_logger
+from src.vector_search.vector_db import VectorDB
+
+
+from fastapi import FastAPI
 
 logger = get_logger(__name__)
 
+app = FastAPI(
+    title="Semantic Open Data API",
+    description="API to semantically search datasets. Responses to the questions",
+    version="1.0.0",
+)
+app.include_router(v1_router)
 
-def benchmark_protocols():
-    """Quick benchmark between gRPC and HTTP"""
-    logger.info("\n" + "=" * 50)
-    logger.info("BENCHMARKING gRPC vs HTTP")
-    logger.info("=" * 50)
 
-    # Test data
-    test_query = "election results Leipzig"
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {"message": "Semantic Open Data API API is running"}
 
-    # Test HTTP
-    start = time.time()
-    rag_http = VectorDB(use_grpc=False)
-    rag_http.search(test_query, limit=5)
-    http_time = time.time() - start
 
-    # Test gRPC
-    start = time.time()
-    rag_grpc = VectorDB(use_grpc=True)
-    rag_grpc.search(test_query, limit=5)
-    grpc_time = time.time() - start
-
-    logger.info("\nBenchmark Results:")
-    logger.info(f"  HTTP search time: {http_time:.3f}s")
-    logger.info(f"  gRPC search time: {grpc_time:.3f}s")
-    logger.info(f"  gRPC is {http_time / grpc_time:.2f}x faster")
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy"}
 
 
 def main():
@@ -131,9 +127,19 @@ def main():
     logger.info("=" * 50)
 
 
-if __name__ == "__main__":
-    # Uncomment to run benchmark
-    benchmark_protocols()
+def run_dev():
+    import uvicorn
 
-    # Run main demo
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+
+def run_start():
+    import uvicorn
+
+    uvicorn.run("main:app", host="0.0.0.0", port=8000)
+
+
+if __name__ == "__main__":
     # main()
+    run_dev()
+    logger.info("http://localhost:8000/docs")

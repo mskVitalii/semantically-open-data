@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 
-from .dataset_dto import DatasetSearchRequest, DatasetSearchResponse
+from .datasets_dto import DatasetSearchRequest, DatasetSearchResponse
 from ..domain.services.dataset_service import DatasetService, get_dataset_service
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])

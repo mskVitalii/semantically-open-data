@@ -16,7 +16,12 @@ class LocalJinaEmbedder:
         self, model_name: str = "jinaai/jina-embeddings-v3", dimensions: int = 512
     ):
         logger.info(f"Loading model {model_name}...")
-        self.model = SentenceTransformer(model_name, trust_remote_code=True)
+        self.model = SentenceTransformer(
+            model_name,
+            cache_folder="../../cache",
+            trust_remote_code=True,
+            revision="main",
+        )
         self.dimensions = dimensions
 
         # Set device

@@ -1,7 +1,8 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
-from datetime import datetime
+from typing import Optional, List
 from dataclasses import dataclass
+
+from src.datasets.datasets_metadata import DatasetMetadata
 
 
 class DatasetSearchRequest(BaseModel):
@@ -16,13 +17,8 @@ class DatasetSearchRequest(BaseModel):
 class DatasetResponse(BaseModel):
     """DTO for dataset information response"""
 
-    id: str
-    name: str
-    description: Optional[str] = None
-    tags: List[str] = []
-    metadata: Dict[str, Any] = {}
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    score: float
+    metadata: DatasetMetadata
 
     class Config:
         from_attributes = True

@@ -11,7 +11,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from src.utils.datasets_utils import sanitize_filename
+from src.datasets.datasets_metadata import DatasetMetadata
+from src.utils.datasets_utils import sanitize_filename, safe_delete
 from src.infrastructure.logger import get_logger
 
 logger = get_logger(__name__)
@@ -455,19 +456,16 @@ class DresdenOpenDataDownloader:
 
         # METADATA
         metadata_file = dataset_dir / "metadata.json"
-        with open(metadata_file, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "dataset_uri": dataset_uri,
-                    "title": title,
-                    "description": description,
-                    "keywords": keywords,
-                    "city": "Dresden",
-                },
-                f,
-                indent=2,
-                ensure_ascii=False,
-            )
+        package_info = DatasetMetadata(
+            id=f"{context_id}/{entry_id}",
+            url=dataset_uri,
+            title=title,
+            description=description,
+            tags=keywords,
+            city="Dresden",
+            state="Saxony",
+            country="Germany",
+        )
 
         logger.info(f"Processing dataset: {title}")
         logger.info(f"Dataset URI: {dataset_uri}")
@@ -495,13 +493,24 @@ class DresdenOpenDataDownloader:
 
             if self.download_file(url, filename, dataset_dir):
                 success = True
-                logger.info(
+                logger.debug(
                     f"Successfully downloaded {extension} file, skipping others"
                 )
                 break
 
             # Small delay between files from same dataset
             time.sleep(self.delay)
+
+        if success:
+            with open(metadata_file, "w", encoding="utf-8") as f:
+                json.dump(
+                    package_info,
+                    f,
+                    indent=2,
+                    ensure_ascii=False,
+                )
+        else:
+            safe_delete(dataset_dir, logger)
 
         with self.stats_lock:
             if success:
@@ -568,7 +577,7 @@ class DresdenOpenDataDownloader:
                 try:
                     success = future.result()
                     if success:
-                        logger.info(
+                        logger.debug(
                             f"Successfully processed dataset ({completed}/{len(all_datasets)})"
                         )
                     else:

@@ -1,5 +1,6 @@
 import unittest
-from datasets_utils import sanitize_filename
+
+from src.utils.datasets_utils import sanitize_filename
 
 
 class TestSanitizeFilename(unittest.TestCase):

@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING
 
 import requests
 
-from src.utils.datasets_utils import sanitize_filename
+from src.datasets.datasets_metadata import DatasetMetadata
+from src.utils.datasets_utils import sanitize_filename, safe_delete
 from src.infrastructure.logger import get_logger
 
 if TYPE_CHECKING:
@@ -65,16 +66,17 @@ class ChemnitzDataDownloader:
             # Folder
             safe_title = sanitize_filename(title)
             dataset_dir = self.output_dir / safe_title
-            dataset_dir.mkdir(exist_ok=True)
 
             # Save META
-            package_meta = {
-                "id": service_info.get("serviceItemId"),
-                "title": title,
-                "city": "Chemnitz",
-            }
-            with open(dataset_dir / "metadata.json", "w", encoding="utf-8") as f:  # type: SupportsWrite[str]
-                json.dump(package_meta, f, ensure_ascii=False, indent=2)
+            # TODO: save to MongoDB buffer
+            # TODO: embedded in Qdrant
+            package_meta = DatasetMetadata(
+                id=service_info.get("serviceItemId"),
+                title=title,
+                city="Chemnitz",
+                state="Saxony",
+                country="Germany",
+            )
 
             # DATASET
             layers = service_info.get("layers", [])
@@ -85,6 +87,8 @@ class ChemnitzDataDownloader:
             if not all_features:
                 logger.debug(f"\tNo layers to download in {title}")
                 return True
+
+            is_downloaded_anything = False
 
             for feature in all_features:
                 layer_id = feature.get("id", 0)
@@ -117,6 +121,7 @@ class ChemnitzDataDownloader:
                         )
 
                         if response.status_code == 200:
+                            dataset_dir.mkdir(exist_ok=True)
                             file_name = f"{layer_name}.{file_ext}"
                             file_path = dataset_dir / file_name
 
@@ -130,6 +135,7 @@ class ChemnitzDataDownloader:
                                         )
                                     logger.debug(f"\t\t✓ Saved as {file_name}")
                                     layer_downloaded = True
+                                    is_downloaded_anything = True
                                     break
                                 except json.JSONDecodeError:
                                     continue
@@ -137,6 +143,7 @@ class ChemnitzDataDownloader:
                                 with open(file_path, "wb") as f:
                                     f.write(response.content)
                                 logger.debug(f"\t\t✓ Saved as {file_name}")
+                                is_downloaded_anything = True
                                 layer_downloaded = True
                                 break
 
@@ -146,6 +153,12 @@ class ChemnitzDataDownloader:
 
                 if not layer_downloaded:
                     logger.error(f"\t\t⚠ Couldn't download layer {layer_name}")
+
+            if not is_downloaded_anything:
+                safe_delete(dataset_dir, logger)
+            else:
+                with open(dataset_dir / "metadata.json", "w", encoding="utf-8") as f:  # type: SupportsWrite[str]
+                    json.dump(package_meta, f, ensure_ascii=False, indent=2)
 
             return True
 

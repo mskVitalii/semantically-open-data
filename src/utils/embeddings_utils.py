@@ -54,15 +54,6 @@ CONTENT: {content_text}""".strip()
 
 
 def extract_metadata_text(metadata_file: Path) -> str:
-    """
-    Extract searchable text from metadata.json
-
-    Args:
-        metadata_file: Path to metadata.json file
-
-    Returns:
-        Formatted metadata text
-    """
     if not metadata_file.exists():
         logger.warning(f"Metadata file not found: {metadata_file}")
         return ""
@@ -70,21 +61,22 @@ def extract_metadata_text(metadata_file: Path) -> str:
     try:
         with open(metadata_file, "r", encoding="utf-8") as f:
             metadata = json.load(f)
-
-        text_parts = []
-
-        # Extract other string fields
-        for key, value in metadata.items():
-            if isinstance(value, str) and value.strip():
-                text_parts.append(f"{key}: {value}")
-
-        result = " ".join(text_parts)
-        logger.debug(f"Extracted metadata text: {len(result)} chars")
-        return result
+        return format_metadata_text(metadata)
 
     except Exception as e:
         logger.error(f"Error extracting metadata from {metadata_file}: {e}")
         return ""
+
+
+def format_metadata_text(metadata: dict) -> str:
+    text_parts = [
+        f"{key}: {value}"
+        for key, value in metadata.items()
+        if isinstance(value, str) and value.strip()
+    ]
+    result = " ".join(text_parts)
+    logger.debug(f"Extracted metadata text: {len(result)} chars")
+    return result
 
 
 def extract_data_content(dataset_path: Path) -> str:

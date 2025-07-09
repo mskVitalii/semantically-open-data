@@ -7,7 +7,8 @@ from pathlib import Path
 from urllib.parse import urlparse, unquote
 from datetime import datetime
 
-from src.utils.datasets_utils import sanitize_filename
+from src.datasets.datasets_metadata import DatasetMetadata
+from src.utils.datasets_utils import sanitize_filename, safe_delete
 from src.infrastructure.logger import get_logger
 
 logger = get_logger(__name__)
@@ -204,24 +205,21 @@ class LeipzigCSVJSONDownloader:
             dataset_dir.mkdir(exist_ok=True)
 
             # Save META
-            package_meta = {
-                "id": package_data.get("id"),
-                "title": package_title,
-                "organization": organization,
-                "author": package_data.get("author"),
-                "description": package_data.get("notes"),
-                "metadata_created": package_data.get("metadata_created"),
-                "metadata_modified": package_data.get("metadata_modified"),
-                "tags": [tag.get("name") for tag in package_data.get("tags", [])],
-                "groups": [
-                    group.get("title") for group in package_data.get("groups", [])
-                ],
-                "url": f"{self.base_url}/dataset/{package_data.get('name')}",
-                "city": "Leipzig",
-            }
-
-            with open(dataset_dir / "metadata.json", "w", encoding="utf-8") as f:
-                json.dump(package_meta, f, ensure_ascii=False, indent=2)
+            package_meta = DatasetMetadata(
+                id=package_data.get("id"),
+                title=package_title,
+                organization=organization,
+                author=package_data.get("author"),
+                description=package_data.get("notes"),
+                metadata_created=package_data.get("metadata_created"),
+                metadata_modified=package_data.get("metadata_modified"),
+                tags=[tag.get("name") for tag in package_data.get("tags", [])],
+                groups=[group.get("title") for group in package_data.get("groups", [])],
+                url=f"{self.base_url}/dataset/{package_data.get('name')}",
+                city="Leipzig",
+                state="Saxony",
+                country="Germany",
+            )
 
             # Download DATASET
             json_resources = [d for d in target_resources if d.get("format") == "JSON"]
@@ -238,6 +236,12 @@ class LeipzigCSVJSONDownloader:
                     self.stats["failed_downloads"] += 1
 
                 time.sleep(0.5)
+
+            if success_count == 0:
+                safe_delete(dataset_dir, logger)
+            else:
+                with open(dataset_dir / "metadata.json", "w", encoding="utf-8") as f:
+                    json.dump(package_meta, f, ensure_ascii=False, indent=2)
 
             return success_count > 0
 

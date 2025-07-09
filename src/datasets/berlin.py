@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import requests
 from playwright.sync_api import sync_playwright
 
+from src.datasets.datasets_metadata import DatasetMetadata
 from src.infrastructure.logger import get_logger
 from src.utils.datasets_utils import (
     allowed_extensions,
@@ -330,7 +331,6 @@ class BerlinOpenDataDownloader:
             safe_title = sanitize_filename(title)
             dataset_dir = self.output_dir / f"{package_name}_{safe_title}"
             dataset_dir.mkdir(exist_ok=True)
-            metadata_file = dataset_dir / "metadata.json"
 
             if not resources:
                 logger.debug(f"No resources found for dataset: {title}")
@@ -346,33 +346,7 @@ class BerlinOpenDataDownloader:
             self.update_stats("errors")
             return False
 
-        try:
-            if not metadata_file.exists():
-                package_meta = {
-                    "id": meta_id,
-                    "title": title,
-                    "groups": [
-                        group.get("title") for group in package.get("groups", [])
-                    ],
-                    "organization": package.get("organization", {}).get("title"),
-                    "tags": [tag.get("name") for tag in package.get("tags", [])],
-                    "description": package.get("notes"),
-                    "city": "Berlin",
-                }
-
-                with open(metadata_file, "w", encoding="utf-8") as f:  # type: SupportsWrite[str]
-                    json.dump(package_meta, f, indent=2, ensure_ascii=False)
-
-            logger.debug(f"Processing dataset: {title} ({len(resources)} resources)")
-        except Exception as e:
-            logger.error(
-                f"Error processing METADATA of the dataset {package_name}: {e}"
-            )
-            with self.stats_lock:
-                self.stats["failed_datasets"].add(package_name)
-
-            self.update_stats("errors")
-            return False
+        logger.debug(f"Processing dataset: {title} ({len(resources)} resources)")
 
         # =============== DATASET Process resources
         try:
@@ -403,6 +377,20 @@ class BerlinOpenDataDownloader:
 
             if success_count > 0:
                 logger.info(f"Downloaded {success_count} files for: {title}")
+                package_meta = DatasetMetadata(
+                    id=meta_id,
+                    title=title,
+                    groups=[group.get("title") for group in package.get("groups", [])],
+                    organization=package.get("organization", {}).get("title"),
+                    tags=[tag.get("name") for tag in package.get("tags", [])],
+                    description=package.get("notes"),
+                    city="Berlin",
+                    state="Saxony",
+                    country="Germany",
+                )
+
+                with open(dataset_dir / "metadata.json", "w", encoding="utf-8") as f:  # type: SupportsWrite[str]
+                    json.dump(package_meta, f, indent=2, ensure_ascii=False)
             else:
                 # not suitable dataset
                 safe_delete(dataset_dir, logger)

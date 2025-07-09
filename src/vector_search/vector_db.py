@@ -2,6 +2,7 @@ import os
 import time
 from typing import List, Optional
 from qdrant_client import QdrantClient
+from qdrant_client.http.models import QueryRequest, ScoredPoint
 from qdrant_client.models import (
     Distance,
     VectorParams,
@@ -153,7 +154,9 @@ class VectorDB:
 
         logger.info(f"Successfully indexed {len(datasets)} datasets")
 
-    def search(self, query: str, city_filter: Optional[str] = None, limit: int = 5):
+    def search(
+        self, query: str, city_filter: Optional[str] = None, limit: int = 5
+    ) -> list[ScoredPoint]:
         """Search for datasets using query_points method"""
         logger.info(f"\nSearching for: '{query}'")
         if city_filter:
@@ -180,21 +183,6 @@ class VectorDB:
 
         # Extract points from the result
         results = query_result.points
-
-        logger.info(f"\nFound {len(results)} results:")
-        for i, result in enumerate(results, 1):
-            logger.info(f"\n{i}. Score: {result.score:.4f}")
-            logger.info(f"   Title: {result.payload['title']}")
-            logger.info(f"   City: {result.payload['city']}")
-            logger.info(f"   Organization: {result.payload['organization']}")
-            if result.payload.get("description"):
-                desc = (
-                    result.payload["description"][:200] + "..."
-                    if len(result.payload["description"]) > 200
-                    else result.payload["description"]
-                )
-                logger.info(f"   Description: {desc}")
-
         return results
 
     def batch_search(
@@ -217,12 +205,12 @@ class VectorDB:
         batch_results = self.qdrant.query_batch_points(
             collection_name=COLLECTION_NAME,
             requests=[
-                {
-                    "query": emb.tolist(),
-                    "filter": search_filter,
-                    "limit": limit,
-                    "with_payload": True,
-                }
+                QueryRequest(
+                    query=emb.tolist(),
+                    filter=search_filter,
+                    limit=limit,
+                    with_payload=True,
+                )
                 for emb in query_embeddings
             ],
         )

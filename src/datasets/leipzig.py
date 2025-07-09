@@ -7,8 +7,8 @@ from pathlib import Path
 from urllib.parse import urlparse, unquote
 from datetime import datetime
 
-from datasets.utils import sanitize_filename
-from infrastructure.logger import get_logger
+from src.utils.datasets_utils import sanitize_filename
+from src.infrastructure.logger import get_logger
 
 logger = get_logger(__name__)
 

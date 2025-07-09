@@ -180,8 +180,8 @@ config/local.py
 *.swp
 *.swo
 
-datasets/*/
-vector_search/*/
+src/datasets/*/
+src/vector_search/*/
 qdrant_data
 
 logs/*

@@ -12,14 +12,14 @@ from urllib.parse import urlparse
 import requests
 from playwright.sync_api import sync_playwright
 
-from datasets.utils import (
+from src.infrastructure.logger import get_logger
+from src.utils.datasets_utils import (
     allowed_extensions,
     allowed_formats,
     safe_delete,
     sanitize_filename,
     skip_formats,
 )
-from infrastructure.logger import get_logger
 
 if TYPE_CHECKING:
     from _typeshed import SupportsWrite  # noqa: F401

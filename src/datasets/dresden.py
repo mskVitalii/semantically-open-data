@@ -11,8 +11,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from datasets.utils import sanitize_filename
-from infrastructure.logger import get_logger
+from src.utils.datasets_utils import sanitize_filename
+from src.infrastructure.logger import get_logger
 
 logger = get_logger(__name__)
 

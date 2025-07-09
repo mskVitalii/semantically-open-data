@@ -5,8 +5,8 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 import multiprocessing
 import time
 
-from infrastructure.logger import get_logger
-from utils import extract_comprehensive_text
+from src.infrastructure.logger import get_logger
+from src.utils.embeddings_utils import extract_comprehensive_text
 
 logger = get_logger(__name__)
 
@@ -259,7 +259,7 @@ def main():
     # city_workers: How many cities to process in parallel
     # dataset_workers: How many datasets to process in parallel within each city
     results = process_all_cities_parallel(
-        datasets_path="../datasets",
+        datasets_path="../../datasets",
         city_workers=4,  # Process 4 cities in parallel
         dataset_workers=8,  # Process 8 datasets in parallel per city
     )

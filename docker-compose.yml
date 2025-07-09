@@ -35,7 +35,7 @@ services:
 
   app:
     build: .
-    container_name: rag_app
+    container_name: semantic_open_data_backend
     depends_on:
       qdrant:
         condition: service_healthy
@@ -45,6 +45,8 @@ services:
       - QDRANT_GRPC_PORT=6334
       - USE_GRPC=true  # Enable gRPC by default
       - ENV=production
+    ports:
+      - "${API_PORT:-8000}:8000"
     volumes:
       - ./logs:/app/logs
       - ./datasets:/app/datasets
@@ -54,6 +56,12 @@ services:
 #    stop_grace_period: 60s
     networks:
       - rag_network
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
 # Optional: Add network for better isolation
 networks:

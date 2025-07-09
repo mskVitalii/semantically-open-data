@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from sentence_transformers import SentenceTransformer
 
-from infrastructure.logger import get_logger
+from src.infrastructure.logger import get_logger
 
 logger = get_logger(__name__)
 

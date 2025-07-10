@@ -1,16 +1,15 @@
-import concurrent.futures
+import asyncio
 import json
 import logging
 import sys
-import threading
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional
 from urllib.parse import urlparse
 
-import requests
-from playwright.sync_api import sync_playwright
+import aiohttp
+import aiofiles
+from playwright.async_api import async_playwright
 
 from src.datasets.datasets_metadata import (
     DatasetJSONEncoder,
@@ -35,7 +34,7 @@ logger = get_logger(__name__)
 
 
 class BerlinOpenDataDownloader:
-    """Class for downloading Berlin open data with parallel processing"""
+    """Async class for downloading Berlin open data with parallel processing"""
 
     def __init__(
         self,
@@ -57,15 +56,12 @@ class BerlinOpenDataDownloader:
         self.output_dir = Path(__file__).parent / Path(output_dir)
         self.max_workers = max_workers
         self.delay = delay
-        self.session = requests.Session()
-        self.session.headers.update(
-            {"User-Agent": "Berlin OpenData Downloader (Python/requests)"}
-        )
+        self.session = None  # Will be created in async context
 
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Thread-safe statistics
+        # Thread-safe statistics (asyncio.Lock for async)
         self.stats = {
             "datasets_found": 0,
             "datasets_processed": 0,
@@ -74,8 +70,8 @@ class BerlinOpenDataDownloader:
             "failed_datasets": set(),  # Track failed datasets for cleanup
             "start_time": datetime.now(),
         }
-        self.stats_lock = threading.Lock()
-        self.index_lock = threading.Lock()
+        self.stats_lock = asyncio.Lock()
+        self.index_lock = asyncio.Lock()
         self.is_embeddings = is_embeddings
         if self.is_embeddings:
             vector_db = VectorDB(use_grpc=True)
@@ -83,12 +79,24 @@ class BerlinOpenDataDownloader:
                 vector_db, buffer_size=100, auto_flush=True
             )
 
-    def update_stats(self, field: str, increment: int = 1):
+    async def __aenter__(self):
+        """Async context manager entry"""
+        self.session = aiohttp.ClientSession(
+            headers={"User-Agent": "Berlin OpenData Downloader (Python/aiohttp)"}
+        )
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit"""
+        if self.session:
+            await self.session.close()
+
+    async def update_stats(self, field: str, increment: int = 1):
         """Thread-safe statistics update"""
-        with self.stats_lock:
+        async with self.stats_lock:
             self.stats[field] += increment
 
-    def get_all_packages(self) -> List[str]:
+    async def get_all_packages(self) -> List[str]:
         """
         Get list of all package names from CKAN API
 
@@ -97,24 +105,24 @@ class BerlinOpenDataDownloader:
         """
         try:
             logger.info("Fetching list of all datasets...")
-            response = self.session.get(f"{self.api_url}/package_list")
-            response.raise_for_status()
+            async with self.session.get(f"{self.api_url}/package_list") as response:
+                response.raise_for_status()
+                data = await response.json()
 
-            data = response.json()
-            if data.get("success"):
-                packages = data.get("result", [])
-                self.stats["datasets_found"] = len(packages)
-                logger.info(f"Found {len(packages)} datasets")
-                return packages
-            else:
-                logger.error(f"API error: {data.get('error')}")
-                return []
+                if data.get("success"):
+                    packages = data.get("result", [])
+                    self.stats["datasets_found"] = len(packages)
+                    logger.info(f"Found {len(packages)} datasets")
+                    return packages
+                else:
+                    logger.error(f"API error: {data.get('error')}")
+                    return []
 
-        except requests.RequestException as e:
+        except aiohttp.ClientError as e:
             logger.error(f"Error fetching package list: {e}")
             return []
 
-    def get_package_details(self, package_name: str) -> Optional[Dict]:
+    async def get_package_details(self, package_name: str) -> Optional[Dict]:
         """
         Get detailed information about a package
 
@@ -125,19 +133,19 @@ class BerlinOpenDataDownloader:
             Package details or None
         """
         try:
-            response = self.session.get(
+            async with self.session.get(
                 f"{self.api_url}/package_show", params={"id": package_name}
-            )
-            response.raise_for_status()
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
 
-            data = response.json()
-            if data.get("success"):
-                return data.get("result")
-            else:
-                logger.warning(f"Package not found or error: {package_name}")
-                return None
+                if data.get("success"):
+                    return data.get("result")
+                else:
+                    logger.warning(f"Package not found or error: {package_name}")
+                    return None
 
-        except requests.RequestException as e:
+        except aiohttp.ClientError as e:
             logger.error(f"Error fetching package details for {package_name}: {e}")
             return None
 
@@ -224,7 +232,7 @@ class BerlinOpenDataDownloader:
         # Skip everything else
         return True
 
-    def download_file(self, url: str, filepath: Path) -> bool:
+    async def download_file(self, url: str, filepath: Path) -> bool:
         """
         Download file from URL
 
@@ -250,25 +258,27 @@ class BerlinOpenDataDownloader:
                 logger.info(
                     f"URL without file extension detected, using Playwright: {url}"
                 )
-                return self.download_file_playwright(url, filepath)
+                return await self.download_file_playwright(url, filepath)
 
-            response = self.session.get(url, stream=True, timeout=5)
-            response.raise_for_status()
+            async with self.session.get(
+                url, timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                response.raise_for_status()
 
-            # Check content type
-            content_type = response.headers.get("content-type", "").lower()
-            if "html" in content_type and response.headers.get("content-length"):
-                content_length = int(response.headers.get("content-length", 0))
-                if content_length < 1000:  # Likely an error page
-                    logger.warning(
-                        f"Response appears to be HTML error page, skipping: {url}"
-                    )
-                    return False
+                # Check content type
+                content_type = response.headers.get("content-type", "").lower()
+                if "html" in content_type and response.headers.get("content-length"):
+                    content_length = int(response.headers.get("content-length", 0))
+                    if content_length < 1000:  # Likely an error page
+                        logger.warning(
+                            f"Response appears to be HTML error page, skipping: {url}"
+                        )
+                        return False
 
-            with open(filepath, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
+                async with aiofiles.open(filepath, "wb") as f:
+                    async for chunk in response.content.iter_chunked(8192):
+                        if chunk:
+                            await f.write(chunk)
 
             # Check if downloaded file is not empty
             if filepath.stat().st_size == 0:
@@ -279,16 +289,16 @@ class BerlinOpenDataDownloader:
             logger.debug(
                 f"Downloaded: {filepath.name} ({filepath.stat().st_size} bytes)"
             )
-            self.update_stats("files_downloaded")
+            await self.update_stats("files_downloaded")
             return True
 
-        except requests.RequestException as e:
+        except aiohttp.ClientError as e:
             logger.error(f"Error downloading {url}: {e}")
-            self.update_stats("errors")
+            await self.update_stats("errors")
             return False
 
     @staticmethod
-    def download_file_playwright(url: str, filepath: Path) -> bool:
+    async def download_file_playwright(url: str, filepath: Path) -> bool:
         """
         Download file using Playwright for JavaScript-rendered pages
         """
@@ -296,32 +306,32 @@ class BerlinOpenDataDownloader:
             logger.debug(f"File already exists: {filepath.name}")
             return True
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
                 accept_downloads=True,
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             )
-            page = context.new_page()
+            page = await context.new_page()
 
             try:
-                with page.expect_download() as download_info:
-                    page.goto(url)
+                async with page.expect_download() as download_info:
+                    await page.goto(url)
                     # Waiting max 5 seconds
-                    download = download_info.value
+                    download = await download_info.value
 
-                download.save_as(filepath)
+                await download.save_as(filepath)
 
                 logger.debug(f"Downloaded via Playwright: {filepath.name}")
-                browser.close()
+                await browser.close()
                 return True
 
             except Exception as e:
                 logger.error(f"Playwright error: {e}")
-                browser.close()
+                await browser.close()
                 return False
 
-    def process_dataset(self, package_name: str) -> bool:
+    async def process_dataset(self, package_name: str) -> bool:
         """
         Process and download one dataset
 
@@ -332,12 +342,13 @@ class BerlinOpenDataDownloader:
             True if dataset successfully processed
         """
         # Add delay to avoid overwhelming the server
-        time.sleep(self.delay)
+        await asyncio.sleep(self.delay)
+
         # =============== METADATA
         try:
-            package = self.get_package_details(package_name)
+            package = await self.get_package_details(package_name)
             if not package:
-                self.update_stats("errors")
+                await self.update_stats("errors")
                 return False
 
             meta_id = package.get("id")
@@ -351,16 +362,16 @@ class BerlinOpenDataDownloader:
 
             if not resources:
                 logger.debug(f"No resources found for dataset: {title}")
-                self.update_stats("datasets_processed")
+                await self.update_stats("datasets_processed")
                 return True
         except Exception as e:
             logger.error(
                 f"Error downloading METADATA of the dataset {package_name}: {e}"
             )
-            with self.stats_lock:
+            async with self.stats_lock:
                 self.stats["failed_datasets"].add(package_name)
 
-            self.update_stats("errors")
+            await self.update_stats("errors")
             return False
 
         logger.debug(f"Processing dataset: {title} ({len(resources)} resources)")
@@ -388,7 +399,7 @@ class BerlinOpenDataDownloader:
                 filename = sanitize_filename(f"{resource_name}_{i}{extension}")
                 filepath = dataset_dir / filename
 
-                if self.download_file(url, filepath):
+                if await self.download_file(url, filepath):
                     success_count += 1
                     break
 
@@ -406,41 +417,44 @@ class BerlinOpenDataDownloader:
                     country="Germany",
                 )
 
-                with open(dataset_dir / "metadata.json", "w", encoding="utf-8") as f:  # type: SupportsWrite[str]
-                    json.dump(
-                        package_meta,
-                        f,
-                        indent=2,
-                        ensure_ascii=False,
-                        cls=DatasetJSONEncoder,
+                async with aiofiles.open(
+                    dataset_dir / "metadata.json", "w", encoding="utf-8"
+                ) as f:
+                    await f.write(
+                        json.dumps(
+                            package_meta,
+                            indent=2,
+                            ensure_ascii=False,
+                            cls=DatasetJSONEncoder,
+                        )
                     )
 
                 if self.is_embeddings:
                     package_meta.content = extract_data_content(dataset_dir)
-                    with self.index_lock:
+                    async with self.index_lock:
                         self.index_buffer.add(package_meta)
 
             else:
                 # not suitable dataset
                 safe_delete(dataset_dir, logger)
 
-            self.update_stats("datasets_processed")
+            await self.update_stats("datasets_processed")
             return True
         except Exception as e:
             logger.error(f"Error processing DATASET {package_name}: {e}")
             # Mark as failed and clean up
-            with self.stats_lock:
+            async with self.stats_lock:
                 self.stats["failed_datasets"].add(package_name)
 
             safe_delete(dataset_dir, logger)
             logger.debug(f"Cleaned up failed dataset directory: {dataset_dir}")
 
-            self.update_stats("errors")
+            await self.update_stats("errors")
             return False
 
-    def print_progress(self):
+    async def print_progress(self):
         """Print current progress"""
-        with self.stats_lock:
+        async with self.stats_lock:
             processed = self.stats["datasets_processed"]
             total = self.stats["datasets_found"]
             files = self.stats["files_downloaded"]
@@ -452,12 +466,12 @@ class BerlinOpenDataDownloader:
                     f"Progress: {processed}/{total} ({percentage:.1f}%) - Files: {files} - Errors: {errors}"
                 )
 
-    def download_all_datasets(self):
+    async def download_all_datasets(self):
         """Download all Berlin datasets using parallel processing"""
-        logger.info("Starting Berlin Open Data download with parallel processing")
+        logger.info("Starting Berlin Open Data download with async parallel processing")
 
         # Get list of all packages
-        packages = self.get_all_packages()
+        packages = await self.get_all_packages()
         if not packages:
             logger.error("No packages found or error fetching package list")
             return
@@ -466,36 +480,41 @@ class BerlinOpenDataDownloader:
             f"Starting download of {len(packages)} datasets with {self.max_workers} workers"
         )
 
-        # Progress reporting thread
-        def progress_reporter():
+        # Progress reporting task
+        async def progress_reporter():
             while True:
-                time.sleep(10)  # Report every 10 seconds
-                with self.stats_lock:
+                await asyncio.sleep(10)  # Report every 10 seconds
+                async with self.stats_lock:
                     if self.stats["datasets_processed"] >= self.stats["datasets_found"]:
                         break
-                self.print_progress()
+                await self.print_progress()
 
-        progress_thread = threading.Thread(target=progress_reporter, daemon=True)
-        progress_thread.start()
+        # Create progress reporter task
+        progress_task = asyncio.create_task(progress_reporter())
 
-        # Process datasets in parallel
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=self.max_workers
-        ) as executor:
-            # Submit all tasks
-            future_to_package = {
-                executor.submit(self.process_dataset, package): package
-                for package in packages
-            }
+        # Create semaphore to limit concurrent tasks
+        semaphore = asyncio.Semaphore(self.max_workers)
 
-            # Process completed tasks
-            for future in concurrent.futures.as_completed(future_to_package):
-                package = future_to_package[future]
-                try:
-                    future.result()
-                except Exception as e:
-                    logger.error(f"Exception in worker for {package}: {e}")
-                    self.update_stats("errors")
+        async def process_with_semaphore(package_name: str):
+            async with semaphore:
+                return await self.process_dataset(package_name)
+
+        # Process datasets concurrently
+        tasks = [process_with_semaphore(package) for package in packages]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Handle any exceptions
+        for package, result in zip(packages, results):
+            if isinstance(result, Exception):
+                logger.error(f"Exception in task for {package}: {result}")
+                await self.update_stats("errors")
+
+        # Cancel progress reporter
+        progress_task.cancel()
+        try:
+            await progress_task
+        except asyncio.CancelledError:
+            pass
 
         if self.is_embeddings:
             self.index_buffer.flush()
@@ -519,8 +538,8 @@ class BerlinOpenDataDownloader:
         logger.info(f"Data saved to: {self.output_dir.absolute()}")
 
 
-def main():
-    """Main function"""
+async def main():
+    """Main async function"""
     import argparse
 
     parser = argparse.ArgumentParser(description="Download Berlin open data")
@@ -534,7 +553,7 @@ def main():
         "--max-workers",
         "-w",
         type=int,
-        default=1,
+        default=5,
         help="Number of parallel workers (default: 5)",
     )
     parser.add_argument(
@@ -555,11 +574,10 @@ def main():
         logging.getLogger().setLevel(logging.INFO)
 
     try:
-        downloader = BerlinOpenDataDownloader(
+        async with BerlinOpenDataDownloader(
             output_dir=args.output_dir, max_workers=args.max_workers, delay=args.delay
-        )
-
-        downloader.download_all_datasets()
+        ) as downloader:
+            await downloader.download_all_datasets()
 
     except KeyboardInterrupt:
         logger.info("Download interrupted by user")
@@ -569,4 +587,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

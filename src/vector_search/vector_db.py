@@ -1,4 +1,3 @@
-import os
 import time
 from typing import List, Optional
 from qdrant_client import QdrantClient
@@ -13,11 +12,9 @@ from qdrant_client.models import (
     PayloadSchemaType,
 )
 import logging
-import sys
 
-from src.datasets.datasets_metadata import DatasetMetadata
+from src.datasets.datasets_metadata import DatasetMetadataWithContent
 from src.infrastructure.config import (
-    ENV,
     USE_GRPC,
     QDRANT_GRPC_PORT,
     QDRANT_HOST,
@@ -28,17 +25,6 @@ from src.infrastructure.config import (
 from src.vector_search.embedder import LocalJinaEmbedder
 
 
-# Setup logging based on environment
-log_handlers = [logging.StreamHandler(sys.stdout)]
-if ENV != "production":
-    os.makedirs("./logs", exist_ok=True)
-    log_handlers.append(logging.FileHandler("./logs/embeddings_and_qdrant.log"))
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=log_handlers,
-)
 logger = logging.getLogger(__name__)
 
 
@@ -122,7 +108,9 @@ class VectorDB:
         else:
             logger.info(f"Collection {COLLECTION_NAME} already exists")
 
-    def index_datasets(self, datasets: List[DatasetMetadata], batch_size: int = 100):
+    def index_datasets(
+        self, datasets: List[DatasetMetadataWithContent], batch_size: int = 100
+    ):
         """Index multiple datasets with batching for better performance"""
         logger.info(f"Indexing {len(datasets)} datasets...")
 

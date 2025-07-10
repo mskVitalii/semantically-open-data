@@ -20,7 +20,7 @@ class LocalJinaEmbedder:
             model_name,
             cache_folder="../../cache",
             trust_remote_code=True,
-            revision="main",
+            revision="f1944de8402dcd5f2b03f822a4bc22a7f2de2eb9",
         )
         self.dimensions = dimensions
 

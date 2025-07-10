@@ -1,6 +1,6 @@
 import time
 
-from src.datasets.datasets_metadata import DatasetMetadata
+from src.datasets.datasets_metadata import DatasetMetadataWithContent
 from src.datasets_api.router import v1_router
 from src.infrastructure.config import USE_GRPC
 from src.infrastructure.logger import get_logger
@@ -41,7 +41,7 @@ def main():
 
     # Sample data - your actual metadata
     sample_datasets = [
-        DatasetMetadata(
+        DatasetMetadataWithContent(
             id="4db3895e-92a9-4bb7-bb33-f792178d331f",
             title="Landtagswahl 2024: Wahlbezirksergebnisse",
             description="Der vorliegende Datensatz präsentiert die Ergebnisse der Wahl zum Sächsischen Landtag 2024 in den Leipziger Wahlbezirken.",
@@ -52,7 +52,7 @@ def main():
             state="Saxony",
             country="Germany",
         ),
-        DatasetMetadata(
+        DatasetMetadataWithContent(
             id="bd1e8543af3e43eeac6b7423abcb424b",
             title="Bodenrichtwerte_1998",
             description="Bodenrichtwerte für Chemnitz aus dem Jahr 1998",
@@ -63,7 +63,7 @@ def main():
             state="Saxony",
             country="Germany",
         ),
-        DatasetMetadata(
+        DatasetMetadataWithContent(
             id="d0d8ba5f-40b1-4c4e-84de-3e9e91035add",
             title="Einwohnerinnen und Einwohner in den Ortsteilen Berlins am 31.12.2011",
             description="Einwohnerinnen und Einwohner in den Ortsteilen Berlins am 31.12.2011",
@@ -74,7 +74,7 @@ def main():
             state="Berlin",
             country="Germany",
         ),
-        DatasetMetadata(
+        DatasetMetadataWithContent(
             id="dataset_4",
             title="Einwohner - Wanderungen - bezogen auf Dresdner Basiswohnung",
             description="Wanderungsbewegungen und Migrationsdaten für Dresden",
@@ -85,7 +85,7 @@ def main():
             state="Saxony",
             country="Germany",
         ),
-        DatasetMetadata(
+        DatasetMetadataWithContent(
             id="dataset_5",
             title="Kommunalwahl 2024: Ergebnisse Leipzig",
             description="Detaillierte Ergebnisse der Kommunalwahl 2024 in Leipzig nach Wahlbezirken",

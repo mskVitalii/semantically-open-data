@@ -1,4 +1,4 @@
-from ...datasets.datasets_metadata import DatasetMetadata
+from ...datasets.datasets_metadata import DatasetMetadataWithContent
 from ...datasets_api.datasets_dto import (
     DatasetSearchRequest,
     DatasetSearchResponse,
@@ -36,7 +36,8 @@ class DatasetService:
         for dataset in datasets:
             metadatas.append(
                 DatasetResponse(
-                    metadata=DatasetMetadata(**dataset.payload), score=dataset.score
+                    metadata=DatasetMetadataWithContent(**dataset.payload),
+                    score=dataset.score,
                 ),
             )
 

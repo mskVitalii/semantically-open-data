@@ -8,9 +8,15 @@ from typing import TYPE_CHECKING
 
 import requests
 
-from src.datasets.datasets_metadata import DatasetMetadata
+from src.datasets.datasets_metadata import (
+    DatasetMetadataWithContent,
+    DatasetJSONEncoder,
+)
 from src.utils.datasets_utils import sanitize_filename, safe_delete
 from src.infrastructure.logger import get_logger
+from src.utils.embeddings_utils import extract_data_content
+from src.vector_search.vector_db import VectorDB
+from src.vector_search.vector_db_buffer import VectorDBBuffer
 
 if TYPE_CHECKING:
     from _typeshed import SupportsWrite  # noqa: F401
@@ -19,7 +25,9 @@ logger = get_logger(__name__)
 
 
 class ChemnitzDataDownloader:
-    def __init__(self, csv_file_path, output_dir="chemnitz"):
+    def __init__(
+        self, csv_file_path, output_dir="chemnitz", is_embeddings: bool = False
+    ):
         self.csv_file_path = csv_file_path
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
@@ -29,6 +37,12 @@ class ChemnitzDataDownloader:
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             }
         )
+        self.is_embeddings = is_embeddings
+        if self.is_embeddings:
+            vector_db = VectorDB(use_grpc=True)
+            self.index_buffer = VectorDBBuffer(
+                vector_db, buffer_size=100, auto_flush=True
+            )
 
     def load_datasets_metadata_from_csv(self):
         datasets: list[dict[str, str]] = []
@@ -69,8 +83,7 @@ class ChemnitzDataDownloader:
 
             # Save META
             # TODO: save to MongoDB buffer
-            # TODO: embedded in Qdrant
-            package_meta = DatasetMetadata(
+            package_meta = DatasetMetadataWithContent(
                 id=service_info.get("serviceItemId"),
                 title=title,
                 city="Chemnitz",
@@ -158,12 +171,21 @@ class ChemnitzDataDownloader:
                 safe_delete(dataset_dir, logger)
             else:
                 with open(dataset_dir / "metadata.json", "w", encoding="utf-8") as f:  # type: SupportsWrite[str]
-                    json.dump(package_meta, f, ensure_ascii=False, indent=2)
+                    json.dump(
+                        package_meta,
+                        f,
+                        ensure_ascii=False,
+                        indent=2,
+                        cls=DatasetJSONEncoder,
+                    )
+                if self.is_embeddings:
+                    package_meta.content = extract_data_content(dataset_dir)
+                    self.index_buffer.add(package_meta)
 
             return True
 
         except Exception as e:
-            print(f"  Ошибка скачивания {title}: {e}")
+            logger.error(f"\tDownloading error {title}: {e}")
             return False
 
     def download_all_datasets(self):
@@ -194,6 +216,8 @@ class ChemnitzDataDownloader:
 
             time.sleep(1)
 
+        if self.is_embeddings:
+            self.index_buffer.flush()
         logger.debug("-" * 50)
         logger.info(
             f"Completed! Successfully processed: {success_count}/{len(metadatas)} datasets"
@@ -228,7 +252,9 @@ def main():
         logging.getLogger().setLevel(logging.INFO)
 
     try:
-        downloader = ChemnitzDataDownloader(csv_file, output_dir=args.output)
+        downloader = ChemnitzDataDownloader(
+            csv_file, output_dir=args.output, is_embeddings=True
+        )
         downloader.download_all_datasets()
     except KeyboardInterrupt:
         logger.warning("⚠️ Download interrupted by user")

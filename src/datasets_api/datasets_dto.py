@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 from dataclasses import dataclass
 
-from src.datasets.datasets_metadata import DatasetMetadata
+from src.datasets.datasets_metadata import DatasetMetadataWithContent
 
 
 class DatasetSearchRequest(BaseModel):
@@ -18,7 +18,7 @@ class DatasetResponse(BaseModel):
     """DTO for dataset information response"""
 
     score: float
-    metadata: DatasetMetadata
+    metadata: DatasetMetadataWithContent
 
     class Config:
         from_attributes = True

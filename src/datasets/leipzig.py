@@ -7,15 +7,21 @@ from pathlib import Path
 from urllib.parse import urlparse, unquote
 from datetime import datetime
 
-from src.datasets.datasets_metadata import DatasetMetadata
+from src.datasets.datasets_metadata import (
+    DatasetJSONEncoder,
+    DatasetMetadataWithContent,
+)
 from src.utils.datasets_utils import sanitize_filename, safe_delete
 from src.infrastructure.logger import get_logger
+from src.utils.embeddings_utils import extract_data_content
+from src.vector_search.vector_db import VectorDB
+from src.vector_search.vector_db_buffer import VectorDBBuffer
 
 logger = get_logger(__name__)
 
 
 class LeipzigCSVJSONDownloader:
-    def __init__(self, output_dir="leipzig"):
+    def __init__(self, output_dir="leipzig", is_embeddings: bool = False):
         self.base_url = "https://opendata.leipzig.de"
         self.api_url = f"{self.base_url}/api/3/action"
         self.output_dir = Path(output_dir)
@@ -27,11 +33,7 @@ class LeipzigCSVJSONDownloader:
                 "Accept": "application/json",
             }
         )
-
-        # Filters for the formats
         self.target_formats = {"csv", "json", "geojson"}
-
-        # Stats
         self.stats = {
             "total_packages_checked": 0,
             "packages_with_target_formats": 0,
@@ -42,6 +44,13 @@ class LeipzigCSVJSONDownloader:
             "json_count": 0,
             "geojson_count": 0,
         }
+
+        self.is_embeddings = is_embeddings
+        if self.is_embeddings:
+            vector_db = VectorDB(use_grpc=True)
+            self.index_buffer = VectorDBBuffer(
+                vector_db, buffer_size=100, auto_flush=True
+            )
 
     def get_packages_with_target_formats(self):
         try:
@@ -205,7 +214,7 @@ class LeipzigCSVJSONDownloader:
             dataset_dir.mkdir(exist_ok=True)
 
             # Save META
-            package_meta = DatasetMetadata(
+            package_meta = DatasetMetadataWithContent(
                 id=package_data.get("id"),
                 title=package_title,
                 organization=organization,
@@ -241,8 +250,16 @@ class LeipzigCSVJSONDownloader:
                 safe_delete(dataset_dir, logger)
             else:
                 with open(dataset_dir / "metadata.json", "w", encoding="utf-8") as f:
-                    json.dump(package_meta, f, ensure_ascii=False, indent=2)
-
+                    json.dump(
+                        package_meta,
+                        f,
+                        ensure_ascii=False,
+                        indent=2,
+                        cls=DatasetJSONEncoder,
+                    )
+            if self.is_embeddings:
+                package_meta.content = extract_data_content(dataset_dir)
+                self.index_buffer.add(package_meta)
             return success_count > 0
 
         except Exception as e:
@@ -306,6 +323,9 @@ Filter: CSV and JSON formats only
             self.download_package(metadata)
             time.sleep(1)
 
+        if self.is_embeddings:
+            self.index_buffer.flush()
+
         # Итоговый отчет
         logger.info("\n" + "=" * 50)
         logger.info("🎉 Downloading completed!")
@@ -333,7 +353,7 @@ def main():
         logging.getLogger().setLevel(logging.INFO)
 
     try:
-        downloader = LeipzigCSVJSONDownloader()
+        downloader = LeipzigCSVJSONDownloader(is_embeddings=True)
         # downloader.download_csv_json_only(limit=3)
         downloader.download_csv_json_only()
     except KeyboardInterrupt:

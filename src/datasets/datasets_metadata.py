@@ -1,4 +1,6 @@
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, asdict
+from datetime import datetime
 from typing import Dict, Any, Optional
 
 from src.utils.embeddings_utils import format_metadata_text
@@ -57,6 +59,47 @@ class DatasetMetadata:
             "url": self.url,
             "author": self.author,
         }
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary (for JSON serialization)"""
+        return asdict(self)
+
+    def to_json(self) -> str:
+        """Convert to JSON string"""
+        return json.dumps(self.to_dict())
+
+
+@dataclass
+class DatasetMetadataWithContent(DatasetMetadata):
+    """Dataset metadata with additional content field"""
+
+    content: Optional[str] = None
+
+    def to_searchable_text(self) -> str:
+        """Combine title, description, and content for embedding"""
+        base_text = super().to_searchable_text()
+
+        # If you want to include content in the searchable text
+        if self.content:
+            return f"{base_text}\n{self.content}"
+        return base_text
+
+    def to_payload(self) -> Dict[str, Any]:
+        """Convert to Qdrant payload including content"""
+        payload = super().to_payload()
+        payload["content"] = self.content
+        return payload
+
+
+class DatasetJSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles DatasetMetadata objects and datetime"""
+
+    def default(self, obj):
+        if isinstance(obj, (DatasetMetadata, DatasetMetadataWithContent)):
+            return obj.to_dict()
+        elif isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
 
 
 # if __name__ == "__main__":

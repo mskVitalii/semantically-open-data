@@ -11,16 +11,26 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from src.datasets.datasets_metadata import DatasetMetadata
+from src.datasets.datasets_metadata import (
+    DatasetJSONEncoder,
+    DatasetMetadataWithContent,
+)
 from src.utils.datasets_utils import sanitize_filename, safe_delete
 from src.infrastructure.logger import get_logger
+from src.utils.embeddings_utils import extract_data_content
+from src.vector_search.vector_db import VectorDB
+from src.vector_search.vector_db_buffer import VectorDBBuffer
 
 logger = get_logger(__name__)
 
 
 class DresdenOpenDataDownloader:
     def __init__(
-        self, output_dir: str = "dresden", delay: float = 0.1, max_workers: int = 10
+        self,
+        output_dir: str = "dresden",
+        delay: float = 0.1,
+        max_workers: int = 10,
+        is_embeddings: bool = False,
     ):
         self.base_url = "https://register.opendata.sachsen.de"
         self.search_endpoint = f"{self.base_url}/store/search"
@@ -34,6 +44,7 @@ class DresdenOpenDataDownloader:
         # Thread-safe locks
         self.stats_lock = Lock()
         self.dir_lock = Lock()
+        self.index_lock = Lock()
 
         # Create output directory
         self.output_dir.mkdir(exist_ok=True)
@@ -46,6 +57,12 @@ class DresdenOpenDataDownloader:
             "errors": 0,
             "start_time": datetime.now(),
         }
+        self.is_embeddings = is_embeddings
+        if self.is_embeddings:
+            vector_db = VectorDB(use_grpc=True)
+            self.index_buffer = VectorDBBuffer(
+                vector_db, buffer_size=100, auto_flush=True
+            )
 
     def _create_session_factory(self):
         """Create session factory with retry strategy"""
@@ -456,7 +473,7 @@ class DresdenOpenDataDownloader:
 
         # METADATA
         metadata_file = dataset_dir / "metadata.json"
-        package_info = DatasetMetadata(
+        package_meta = DatasetMetadataWithContent(
             id=f"{context_id}/{entry_id}",
             url=dataset_uri,
             title=title,
@@ -504,11 +521,16 @@ class DresdenOpenDataDownloader:
         if success:
             with open(metadata_file, "w", encoding="utf-8") as f:
                 json.dump(
-                    package_info,
+                    package_meta,
                     f,
                     indent=2,
                     ensure_ascii=False,
+                    cls=DatasetJSONEncoder,
                 )
+            if self.is_embeddings:
+                package_meta.content = extract_data_content(dataset_dir)
+                with self.index_lock:
+                    self.index_buffer.add(package_meta)
         else:
             safe_delete(dataset_dir, logger)
 
@@ -595,6 +617,9 @@ class DresdenOpenDataDownloader:
                         f"Progress: {completed}/{len(all_datasets)} datasets processed"
                     )
 
+        if self.is_embeddings:
+            self.index_buffer.flush()
+
         # Print statistics
         end_time = datetime.now()
         duration = end_time - self.stats["start_time"]
@@ -650,7 +675,10 @@ def main():
 
     try:
         downloader = DresdenOpenDataDownloader(
-            output_dir=args.output_dir, delay=args.delay, max_workers=args.workers
+            output_dir=args.output_dir,
+            delay=args.delay,
+            max_workers=args.workers,
+            is_embeddings=True,
         )
         downloader.download_all_datasets()
 

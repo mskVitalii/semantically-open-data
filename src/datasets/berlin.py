@@ -12,7 +12,10 @@ from urllib.parse import urlparse
 import requests
 from playwright.sync_api import sync_playwright
 
-from src.datasets.datasets_metadata import DatasetMetadata
+from src.datasets.datasets_metadata import (
+    DatasetJSONEncoder,
+    DatasetMetadataWithContent,
+)
 from src.infrastructure.logger import get_logger
 from src.utils.datasets_utils import (
     allowed_extensions,
@@ -21,6 +24,9 @@ from src.utils.datasets_utils import (
     sanitize_filename,
     skip_formats,
 )
+from src.utils.embeddings_utils import extract_data_content
+from src.vector_search.vector_db import VectorDB
+from src.vector_search.vector_db_buffer import VectorDBBuffer
 
 if TYPE_CHECKING:
     from _typeshed import SupportsWrite  # noqa: F401
@@ -32,7 +38,11 @@ class BerlinOpenDataDownloader:
     """Class for downloading Berlin open data with parallel processing"""
 
     def __init__(
-        self, output_dir: str = "berlin", max_workers: int = 5, delay: float = 0.2
+        self,
+        output_dir: str = "berlin",
+        max_workers: int = 5,
+        delay: float = 0.2,
+        is_embeddings: bool = False,
     ):
         """
         Initialize downloader
@@ -65,6 +75,13 @@ class BerlinOpenDataDownloader:
             "start_time": datetime.now(),
         }
         self.stats_lock = threading.Lock()
+        self.index_lock = threading.Lock()
+        self.is_embeddings = is_embeddings
+        if self.is_embeddings:
+            vector_db = VectorDB(use_grpc=True)
+            self.index_buffer = VectorDBBuffer(
+                vector_db, buffer_size=100, auto_flush=True
+            )
 
     def update_stats(self, field: str, increment: int = 1):
         """Thread-safe statistics update"""
@@ -377,7 +394,7 @@ class BerlinOpenDataDownloader:
 
             if success_count > 0:
                 logger.info(f"Downloaded {success_count} files for: {title}")
-                package_meta = DatasetMetadata(
+                package_meta = DatasetMetadataWithContent(
                     id=meta_id,
                     title=title,
                     groups=[group.get("title") for group in package.get("groups", [])],
@@ -390,7 +407,19 @@ class BerlinOpenDataDownloader:
                 )
 
                 with open(dataset_dir / "metadata.json", "w", encoding="utf-8") as f:  # type: SupportsWrite[str]
-                    json.dump(package_meta, f, indent=2, ensure_ascii=False)
+                    json.dump(
+                        package_meta,
+                        f,
+                        indent=2,
+                        ensure_ascii=False,
+                        cls=DatasetJSONEncoder,
+                    )
+
+                if self.is_embeddings:
+                    package_meta.content = extract_data_content(dataset_dir)
+                    with self.index_lock:
+                        self.index_buffer.add(package_meta)
+
             else:
                 # not suitable dataset
                 safe_delete(dataset_dir, logger)
@@ -467,6 +496,9 @@ class BerlinOpenDataDownloader:
                 except Exception as e:
                     logger.error(f"Exception in worker for {package}: {e}")
                     self.update_stats("errors")
+
+        if self.is_embeddings:
+            self.index_buffer.flush()
 
         # Final statistics
         end_time = datetime.now()

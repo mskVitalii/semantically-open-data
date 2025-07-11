@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from sentence_transformers import SentenceTransformer
 
-from src.infrastructure.config import IS_DOCKER
+from src.infrastructure.config import IS_DOCKER, EMBEDDING_DIM
 from src.infrastructure.logger import get_logger
 
 logger = get_logger(__name__)
@@ -59,3 +59,8 @@ class LocalJinaEmbedder:
         )
         # Truncate each embedding
         return [emb[: self.dimensions] for emb in embeddings]
+
+
+embedder = LocalJinaEmbedder(
+    model_name="jinaai/jina-embeddings-v4", dimensions=EMBEDDING_DIM
+)

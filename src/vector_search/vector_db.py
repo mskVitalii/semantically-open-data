@@ -22,8 +22,7 @@ from src.infrastructure.config import (
     EMBEDDING_DIM,
     QDRANT_COLLECTION_NAME,
 )
-from src.vector_search.embedder import LocalJinaEmbedder
-
+from src.vector_search.embedder import embedder
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +35,7 @@ class VectorDB:
         # Use environment variable if not explicitly set
         self.use_grpc = use_grpc if use_grpc is not None else USE_GRPC
         self.qdrant: AsyncQdrantClient | None = None
-        self.embedder = LocalJinaEmbedder(
-            model_name="jinaai/jina-embeddings-v4", dimensions=EMBEDDING_DIM
-        )
+        self.embedder = embedder
 
     async def initialize(self):
         """Async initialization of client and resources"""

@@ -1,15 +1,14 @@
+import asyncio
 import json
 import logging
-import time
+import sys
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
+from typing import List, Dict, Optional, Set
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import aiohttp
+import aiofiles
+from aiohttp import ClientTimeout, TCPConnector
 
 from src.datasets.datasets_metadata import (
     DatasetJSONEncoder,
@@ -25,38 +24,68 @@ logger = get_logger(__name__)
 
 
 class DresdenOpenDataDownloader:
+    """Optimized async class for downloading Dresden open data"""
+
     def __init__(
         self,
         output_dir: str = "dresden",
-        delay: float = 0.1,
-        max_workers: int = 10,
+        max_workers: int = 20,
+        delay: float = 0.05,
         is_embeddings: bool = False,
+        connection_limit: int = 100,
+        connection_limit_per_host: int = 30,
+        batch_size: int = 50,
+        max_retries: int = 1,
     ):
+        """
+        Initialize optimized downloader
+
+        Args:
+            output_dir: Directory to save data
+            max_workers: Number of parallel workers
+            delay: Delay between requests in seconds
+            is_embeddings: Whether to generate embeddings
+            connection_limit: Total connection pool size
+            connection_limit_per_host: Per-host connection limit
+            batch_size: Size of dataset batches to process
+            max_retries: Maximum retry attempts for failed requests
+        """
         self.base_url = "https://register.opendata.sachsen.de"
         self.search_endpoint = f"{self.base_url}/store/search"
         self.output_dir = Path(output_dir)
-        self.delay = delay
-        self.max_workers = max_workers
-
-        # Create thread-safe session factory
-        self.session_factory = self._create_session_factory()
-
-        # Thread-safe locks
-        self.stats_lock = Lock()
-        self.dir_lock = Lock()
-        self.index_lock = Lock()
-
-        # Create output directory
         self.output_dir.mkdir(exist_ok=True)
+        self.max_workers = max_workers
+        self.delay = delay
+        self.batch_size = batch_size
+        self.max_retries = max_retries
+        self.session = None
 
-        # Download statistics
+        # Connection configuration
+        self.connection_limit = connection_limit
+        self.connection_limit_per_host = connection_limit_per_host
+
+        # Statistics
         self.stats = {
             "datasets_found": 0,
-            "datasets_downloaded": 0,
+            "datasets_processed": 0,
             "files_downloaded": 0,
             "errors": 0,
+            "failed_datasets": set(),
             "start_time": datetime.now(),
+            "cache_hits": 0,
+            "retries": 0,
         }
+        self.stats_lock = asyncio.Lock()
+        self.index_lock = asyncio.Lock()
+
+        # Cache for metadata to avoid redundant API calls
+        self.metadata_cache = {}
+        self.cache_lock = asyncio.Lock()
+
+        # Track failed URLs for retry optimization
+        self.failed_urls: Set[str] = set()
+        self.failed_urls_lock = asyncio.Lock()
+
         self.is_embeddings = is_embeddings
         if self.is_embeddings:
             vector_db = VectorDB(use_grpc=True)
@@ -64,33 +93,50 @@ class DresdenOpenDataDownloader:
                 vector_db, buffer_size=100, auto_flush=True
             )
 
-    def _create_session_factory(self):
-        """Create session factory with retry strategy"""
+    async def __aenter__(self):
+        """Async context manager entry with optimized session"""
+        # Create connector with connection pooling
+        connector = TCPConnector(
+            limit=self.connection_limit,
+            limit_per_host=self.connection_limit_per_host,
+            ttl_dns_cache=300,  # DNS cache for 5 minutes
+            enable_cleanup_closed=True,
+            force_close=True,
+        )
 
-        def create_session():
-            session = requests.Session()
-            retry_strategy = Retry(
-                total=3,
-                backoff_factor=1,
-                status_forcelist=[429, 500, 502, 503, 504],
-            )
-            adapter = HTTPAdapter(
-                max_retries=retry_strategy,
-                pool_connections=self.max_workers,
-                pool_maxsize=self.max_workers * 2,
-            )
-            session.mount("http://", adapter)
-            session.mount("https://", adapter)
-            session.headers.update(
-                {"User-Agent": "Dresden OpenData Downloader (Python/requests)"}
-            )
-            return session
+        # Optimized timeout settings
+        timeout = ClientTimeout(
+            total=60,  # Total timeout
+            connect=10,  # Connection timeout
+            sock_read=30,  # Socket read timeout
+        )
 
-        return create_session
+        self.session = aiohttp.ClientSession(
+            connector=connector,
+            timeout=timeout,
+            headers={
+                "User-Agent": "Dresden OpenData Downloader (Python/aiohttp)",
+                "Accept-Encoding": "gzip, deflate",  # Enable compression
+            },
+        )
+        return self
 
-    def search_dresden_datasets(self, limit: int = 100, offset: int = 0) -> Dict:
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit"""
+        if self.session:
+            await self.session.close()
+
+    async def update_stats(self, field: str, increment: int = 1):
+        """Thread-safe statistics update"""
+        async with self.stats_lock:
+            if field == "failed_datasets":
+                # Special handling for set
+                return
+            self.stats[field] += increment
+
+    async def search_dresden_datasets(self, limit: int = 100, offset: int = 0) -> Dict:
         """
-        Search Dresden datasets via API
+        Search Dresden datasets via API with retry logic
 
         Args:
             limit: Number of results per request (max 100)
@@ -107,21 +153,28 @@ class DresdenOpenDataDownloader:
             "sort": "modified desc",
         }
 
-        session = self.session_factory()
-        try:
-            logger.info(f"Searching datasets: offset={offset}, limit={limit}")
-            response = session.get(self.search_endpoint, params=params)
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            logger.error(f"Error searching datasets: {e}")
-            return {}
-        finally:
-            session.close()
+        for attempt in range(self.max_retries):
+            try:
+                logger.info(f"Searching datasets: offset={offset}, limit={limit}")
+                async with self.session.get(
+                    self.search_endpoint, params=params
+                ) as response:
+                    response.raise_for_status()
+                    return await response.json()
+            except Exception as e:
+                if attempt < self.max_retries - 1:
+                    await self.update_stats("retries")
+                    await asyncio.sleep(2**attempt)  # Exponential backoff
+                else:
+                    logger.error(f"Error searching datasets: {e}")
+                    return {}
+        return {}
 
-    def get_dataset_metadata(self, context_id: str, entry_id: str) -> Optional[Dict]:
+    async def get_dataset_metadata(
+        self, context_id: str, entry_id: str
+    ) -> Optional[Dict]:
         """
-        Get metadata for specific dataset
+        Get metadata for specific dataset with caching
 
         Args:
             context_id: Context ID
@@ -130,35 +183,37 @@ class DresdenOpenDataDownloader:
         Returns:
             Dataset metadata
         """
-        session = self.session_factory()
-        try:
-            # Try different URL variants to get metadata
-            urls_to_try = [
-                f"{self.base_url}/store/{context_id}/metadata/{entry_id}",
-                f"{self.base_url}/store/{context_id}/entry/{entry_id}",
-                f"{self.base_url}/store/{context_id}/resource/{entry_id}",
-            ]
+        cache_key = f"{context_id}/{entry_id}"
 
-            for url in urls_to_try:
-                try:
-                    response = session.get(url)
-                    if response.status_code == 200:
-                        return response.json()
-                except requests.RequestException:
-                    continue
+        # Check cache first
+        async with self.cache_lock:
+            if cache_key in self.metadata_cache:
+                await self.update_stats("cache_hits")
+                return self.metadata_cache[cache_key]
 
-            logger.warning(
-                f"Could not get additional metadata for {context_id}/{entry_id}"
-            )
-            return None
+        # Try different URL variants to get metadata
+        urls_to_try = [
+            f"{self.base_url}/store/{context_id}/metadata/{entry_id}",
+            f"{self.base_url}/store/{context_id}/entry/{entry_id}",
+            f"{self.base_url}/store/{context_id}/resource/{entry_id}",
+        ]
 
-        except Exception as e:
-            logger.error(f"Error getting metadata {context_id}/{entry_id}: {e}")
-            return None
-        finally:
-            session.close()
+        for url in urls_to_try:
+            try:
+                async with self.session.get(url) as response:
+                    if response.status == 200:
+                        metadata = await response.json()
+                        # Cache successful result
+                        async with self.cache_lock:
+                            self.metadata_cache[cache_key] = metadata
+                        return metadata
+            except Exception:
+                continue
 
-    def extract_download_urls(
+        logger.warning(f"Could not get additional metadata for {context_id}/{entry_id}")
+        return None
+
+    async def extract_download_urls(
         self, dataset_metadata: Dict, dataset_uri: str
     ) -> List[Dict]:
         """
@@ -177,75 +232,64 @@ class DresdenOpenDataDownloader:
             logger.warning("No dataset URI provided")
             return downloads
 
-        session = self.session_factory()
+        # Formats to try in priority order
+        format_attempts = [
+            {"suffix": "/content.json", "format": "application/json", "ext": ".json"},
+            {
+                "suffix": "/content.json",
+                "format": "application/json",
+                "ext": ".geojson",
+            },
+            {"suffix": "/content.csv", "format": "text/csv", "ext": ".csv"},
+            # {"suffix": "/content.xml", "format": "application/xml", "ext": ".xml"},
+            # {
+            #     "suffix": "/content.xlsx",
+            #     "format": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            #     "ext": ".xlsx",
+            # },
+        ]
+
+        # Check each format concurrently
+        check_tasks = []
+        for format_info in format_attempts:
+            url = f"{dataset_uri}{format_info['suffix']}"
+            task = self._check_url_availability(url, format_info)
+            check_tasks.append(task)
+
+        results = await asyncio.gather(*check_tasks, return_exceptions=True)
+
+        # Add successful results
+        for result in results:
+            if isinstance(result, dict) and result:
+                downloads.append(result)
+
+        # Fallback: try to extract from distribution metadata if no direct files found
+        if not downloads:
+            logger.debug("No direct content files found, trying distribution metadata")
+            downloads = self.extract_from_distributions(dataset_metadata)
+
+        logger.info(f"Found {len(downloads)} files for download")
+        return downloads
+
+    async def _check_url_availability(
+        self, url: str, format_info: Dict
+    ) -> Optional[Dict]:
+        """Check if a URL is available and return download info"""
         try:
-            # Simple approach: try dataset_uri + "/content.csv"
-            csv_url = f"{dataset_uri}/content.csv"
-
-            # Check if the CSV file exists by making a HEAD request
-            try:
-                logger.debug(f"Checking CSV availability: {csv_url}")
-                response = session.head(csv_url, timeout=10)
-
-                if response.status_code == 200:
-                    downloads.append(
-                        {
-                            "url": csv_url,
-                            "title": "content",
-                            "format": "text/csv",
-                            "extension": ".csv",
-                        }
-                    )
-                    logger.debug(f"Found CSV file: {csv_url}")
-                else:
-                    logger.debug(
-                        f"CSV not available (status {response.status_code}): {csv_url}"
-                    )
-            except requests.RequestException as e:
-                logger.debug(f"Error checking CSV availability: {e}")
-
-            # Also try other common formats
-            for format_info in [
-                {
-                    "suffix": "/content.json",
-                    "format": "application/json",
-                    "ext": ".json",
-                },
-                {"suffix": "/content.xml", "format": "application/xml", "ext": ".xml"},
-                {
-                    "suffix": "/content.xlsx",
-                    "format": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    "ext": ".xlsx",
-                },
-            ]:
-                try:
-                    format_url = f"{dataset_uri}{format_info['suffix']}"
-                    response = session.head(format_url, timeout=10)
-
-                    if response.status_code == 200:
-                        downloads.append(
-                            {
-                                "url": format_url,
-                                "title": "content",
-                                "format": format_info["format"],
-                                "extension": format_info["ext"],
-                            }
-                        )
-                        logger.debug(f"Found {format_info['ext']} file: {format_url}")
-                except requests.RequestException:
-                    continue
-
-            # Fallback: try to extract from distribution metadata if no direct files found
-            if not downloads:
-                logger.debug(
-                    "No direct content files found, trying distribution metadata"
-                )
-                downloads = self.extract_from_distributions(dataset_metadata)
-
-            logger.info(f"Found {len(downloads)} files for download")
-            return downloads
-        finally:
-            session.close()
+            logger.debug(f"Checking availability: {url}")
+            async with self.session.head(
+                url, timeout=ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    return {
+                        "url": url,
+                        "title": "content",
+                        "format": format_info["format"],
+                        "extension": format_info["ext"],
+                    }
+        except Exception:
+            pass
+        return None
 
     @staticmethod
     def extract_from_distributions(metadata: Dict) -> List[Dict]:
@@ -280,7 +324,6 @@ class DresdenOpenDataDownloader:
 
                     # Get distribution information
                     dist_info = metadata.get(dist_uri, {})
-                    logger.debug(f"Distribution info: {list(dist_info.keys())}")
 
                     # Look for download URL
                     download_url = None
@@ -317,17 +360,15 @@ class DresdenOpenDataDownloader:
                     # Determine file extension
                     extension = ""
                     if file_format:
-                        if "csv" in file_format.lower():
+                        format_lower = file_format.lower()
+                        if "csv" in format_lower:
                             extension = ".csv"
-                        elif "json" in file_format.lower():
+                        elif "json" in format_lower:
                             extension = ".json"
-                        elif "xml" in file_format.lower():
-                            extension = ".xml"
-                        elif (
-                            "xlsx" in file_format.lower()
-                            or "excel" in file_format.lower()
-                        ):
-                            extension = ".xlsx"
+                        # elif "xml" in format_lower:
+                        #     extension = ".xml"
+                        # elif "xlsx" in format_lower or "excel" in format_lower:
+                        #     extension = ".xlsx"
 
                     if download_url:
                         downloads.append(
@@ -343,9 +384,9 @@ class DresdenOpenDataDownloader:
 
         return downloads
 
-    def download_file(self, url: str, filename: str, dataset_dir: Path) -> bool:
+    async def download_file(self, url: str, filename: str, dataset_dir: Path) -> bool:
         """
-        Download file
+        Download file with optimized async streaming
 
         Args:
             url: File URL
@@ -358,52 +399,78 @@ class DresdenOpenDataDownloader:
         filepath = dataset_dir / filename
 
         # Check if file already exists
-        if filepath.exists():
-            logger.info(f"File already exists: {filepath}")
+        if filepath.exists() and filepath.stat().st_size > 0:
+            logger.debug(f"File already exists: {filepath}")
             return True
 
-        session = self.session_factory()
-        try:
-            logger.info(f"Downloading: {url}")
-            response = session.get(url, stream=True, timeout=30)
-            response.raise_for_status()
-
-            # Check if response contains actual data (not just an error page)
-            content_type = response.headers.get("content-type", "").lower()
-            content_length = response.headers.get("content-length")
-
-            if content_length and int(content_length) < 100 and "html" in content_type:
-                logger.warning(f"Response appears to be an error page, skipping: {url}")
+        # Check if URL previously failed
+        async with self.failed_urls_lock:
+            if url in self.failed_urls:
                 return False
 
-            with open(filepath, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
+        for attempt in range(self.max_retries):
+            try:
+                logger.debug(f"Downloading: {url}")
+                async with self.session.get(url) as response:
+                    response.raise_for_status()
 
-            # Check if downloaded file is not empty
-            if filepath.stat().st_size == 0:
-                logger.warning(f"Downloaded file is empty, removing: {filepath}")
-                filepath.unlink()
-                return False
+                    # Check content type and length
+                    content_type = response.headers.get("content-type", "").lower()
+                    content_length = response.headers.get("content-length")
 
-            logger.info(f"File saved: {filepath} ({filepath.stat().st_size} bytes)")
+                    if (
+                        content_length
+                        and int(content_length) < 100
+                        and "html" in content_type
+                    ):
+                        logger.warning(f"Response appears to be an error page: {url}")
+                        async with self.failed_urls_lock:
+                            self.failed_urls.add(url)
+                        return False
 
-            with self.stats_lock:
-                self.stats["files_downloaded"] += 1
+                    # Create temporary file for atomic write
+                    temp_path = filepath.with_suffix(filepath.suffix + ".tmp")
 
-            return True
+                    # Download with streaming
+                    async with aiofiles.open(temp_path, "wb") as f:
+                        async for chunk in response.content.iter_chunked(
+                            65536
+                        ):  # 64KB chunks
+                            await f.write(chunk)
 
-        except requests.RequestException as e:
-            logger.error(f"Error downloading {url}: {e}")
-            with self.stats_lock:
-                self.stats["errors"] += 1
-            return False
-        finally:
-            session.close()
+                    # Verify file is not empty
+                    if temp_path.stat().st_size == 0:
+                        logger.warning(f"Downloaded file is empty: {filepath}")
+                        temp_path.unlink()
+                        async with self.failed_urls_lock:
+                            self.failed_urls.add(url)
+                        return False
 
-    def process_dataset(self, dataset_info: Dict) -> bool:
-        """Process a single dataset"""
+                    # Atomic rename
+                    temp_path.rename(filepath)
+
+                    logger.info(
+                        f"File saved: {filepath} ({filepath.stat().st_size} bytes)"
+                    )
+                    await self.update_stats("files_downloaded")
+                    return True
+
+            except Exception as e:
+                if attempt < self.max_retries - 1:
+                    await self.update_stats("retries")
+                    await asyncio.sleep(2**attempt)
+                else:
+                    logger.error(f"Error downloading {url}: {e}")
+                    await self.update_stats("errors")
+                    async with self.failed_urls_lock:
+                        self.failed_urls.add(url)
+                    return False
+        return False
+
+    async def process_dataset(self, dataset_info: Dict) -> bool:
+        """Process a single dataset with optimized async operations"""
+        await asyncio.sleep(self.delay)  # Minimal delay to respect server
+
         context_id = dataset_info.get("contextId")
         entry_id = dataset_info.get("entryId")
 
@@ -411,7 +478,19 @@ class DresdenOpenDataDownloader:
             logger.warning("Missing contextId or entryId")
             return False
 
-        # Use metadata from dataset_info as it already contains all needed information
+        # Check if already processed
+        safe_key = f"{context_id}_{entry_id}"
+        existing_dirs = [
+            d
+            for d in self.output_dir.iterdir()
+            if d.is_dir() and d.name.startswith(safe_key)
+        ]
+        if existing_dirs:
+            logger.debug(f"Dataset already processed: {safe_key}")
+            await self.update_stats("datasets_processed")
+            return True
+
+        # Use metadata from dataset_info
         dataset_metadata = dataset_info.get("metadata", {})
 
         if not dataset_metadata:
@@ -460,19 +539,17 @@ class DresdenOpenDataDownloader:
                         description = description_info[0].get("value")
 
                     break
+
         if not dataset_uri:
             logger.warning(f"Dataset URI not found in metadata {context_id}/{entry_id}")
             return False
 
-        # Directory creation with lock
+        # Directory creation
         safe_title = sanitize_filename(title)
         dataset_dir = self.output_dir / f"{context_id}_{entry_id}_{safe_title}"
+        dataset_dir.mkdir(exist_ok=True)
 
-        with self.dir_lock:
-            dataset_dir.mkdir(exist_ok=True)
-
-        # METADATA
-        metadata_file = dataset_dir / "metadata.json"
+        # Prepare metadata
         package_meta = DatasetMetadataWithContent(
             id=f"{context_id}/{entry_id}",
             url=dataset_uri,
@@ -485,73 +562,94 @@ class DresdenOpenDataDownloader:
         )
 
         logger.info(f"Processing dataset: {title}")
-        logger.info(f"Dataset URI: {dataset_uri}")
+        logger.debug(f"Dataset URI: {dataset_uri}")
 
-        # Extract download links using the new approach
-        downloads = self.extract_download_urls(dataset_metadata, dataset_uri)
+        # Extract download links
+        downloads = await self.extract_download_urls(dataset_metadata, dataset_uri)
 
         if not downloads:
             logger.warning(f"No download files found for dataset: {title}")
+            # Still save metadata even if no downloads
+            metadata_file = dataset_dir / "metadata.json"
+            async with aiofiles.open(metadata_file, "w", encoding="utf-8") as f:
+                await f.write(
+                    json.dumps(
+                        package_meta,
+                        indent=2,
+                        ensure_ascii=False,
+                        cls=DatasetJSONEncoder,
+                    )
+                )
+            await self.update_stats("datasets_processed")
             return True
 
         # Sort downloads to prioritize JSON files
         json_downloads = [d for d in downloads if d.get("extension") == ".json"]
         other_downloads = [d for d in downloads if d.get("extension") != ".json"]
-
-        # Process JSON files first, then others if needed
         sorted_downloads = json_downloads + other_downloads
 
-        success = False
-        for i, download in enumerate(sorted_downloads):
-            url = download["url"]
-            file_title = download.get("title", f"file_{i}")
-            extension = download.get("extension", "")
-            filename = sanitize_filename(f"{file_title}{extension}")
+        # Download files with limited concurrency
+        download_semaphore = asyncio.Semaphore(
+            3
+        )  # Limit concurrent downloads per dataset
 
-            if self.download_file(url, filename, dataset_dir):
+        async def download_with_semaphore(download_info):
+            async with download_semaphore:
+                url = download_info["url"]
+                file_title = download_info.get("title", "file")
+                extension = download_info.get("extension", "")
+                filename = sanitize_filename(f"{file_title}{extension}")
+                return await self.download_file(url, filename, dataset_dir)
+
+        # Try to download files
+        success = False
+        for download_info in sorted_downloads:
+            if await download_with_semaphore(download_info):
                 success = True
                 logger.debug(
-                    f"Successfully downloaded {extension} file, skipping others"
+                    f"Successfully downloaded {download_info.get('extension')} file"
                 )
-                break
-
-            # Small delay between files from same dataset
-            time.sleep(self.delay)
+                break  # Stop after first successful download
 
         if success:
-            with open(metadata_file, "w", encoding="utf-8") as f:
-                json.dump(
-                    package_meta,
-                    f,
-                    indent=2,
-                    ensure_ascii=False,
-                    cls=DatasetJSONEncoder,
+            # Save metadata
+            metadata_file = dataset_dir / "metadata.json"
+            async with aiofiles.open(metadata_file, "w", encoding="utf-8") as f:
+                await f.write(
+                    json.dumps(
+                        package_meta,
+                        indent=2,
+                        ensure_ascii=False,
+                        cls=DatasetJSONEncoder,
+                    )
                 )
+
             if self.is_embeddings:
-                package_meta.content = extract_data_content(dataset_dir)
-                with self.index_lock:
+                # Run CPU-bound operation in thread pool
+                loop = asyncio.get_event_loop()
+                package_meta.content = await loop.run_in_executor(
+                    None, extract_data_content, dataset_dir
+                )
+                async with self.index_lock:
                     self.index_buffer.add(package_meta)
         else:
+            # Clean up empty dataset
             safe_delete(dataset_dir, logger)
 
-        with self.stats_lock:
-            if success:
-                self.stats["datasets_downloaded"] += 1
-
+        await self.update_stats("datasets_processed")
         return success
 
-    def download_all_datasets_parallel(self):
-        """Download all datasets using parallel processing"""
-        logger.info("Starting parallel search and download of Dresden datasets")
-
-        # First, collect all datasets
+    async def collect_all_datasets(self) -> List[Dict]:
+        """Collect all datasets from the API"""
         all_datasets = []
         offset = 0
         limit = 100
 
         while True:
             # Search for datasets
-            search_result = self.search_dresden_datasets(limit=limit, offset=offset)
+            search_result = await self.search_dresden_datasets(
+                limit=limit, offset=offset
+            )
 
             if not search_result or "resource" not in search_result:
                 logger.warning("Empty response from API or invalid format")
@@ -578,68 +676,115 @@ class DresdenOpenDataDownloader:
             if len(children) < limit:
                 break
 
-        # Process datasets in parallel
+        return all_datasets
+
+    async def print_progress(self):
+        """Enhanced progress reporting"""
+        async with self.stats_lock:
+            processed = self.stats["datasets_processed"]
+            total = self.stats["datasets_found"]
+            files = self.stats["files_downloaded"]
+            errors = self.stats["errors"]
+            cache_hits = self.stats["cache_hits"]
+            retries = self.stats["retries"]
+
+            if total > 0:
+                percentage = (processed / total) * 100
+                elapsed = (datetime.now() - self.stats["start_time"]).total_seconds()
+                rate = processed / elapsed if elapsed > 0 else 0
+                eta = (total - processed) / rate if rate > 0 else 0
+
+                logger.info(
+                    f"Progress: {processed}/{total} ({percentage:.1f}%) - "
+                    f"Files: {files} - Errors: {errors} - "
+                    f"Cache hits: {cache_hits} - Retries: {retries} - "
+                    f"Rate: {rate:.1f} datasets/s - ETA: {eta:.0f}s"
+                )
+
+    async def download_all_datasets(self):
+        """Download all datasets with optimized async processing"""
+        logger.info("Starting optimized Dresden Open Data download")
+
+        # First, collect all datasets
+        all_datasets = await self.collect_all_datasets()
+
+        if not all_datasets:
+            logger.error("No datasets found")
+            return
+
         logger.info(
-            f"Starting parallel processing of {len(all_datasets)} datasets with {self.max_workers} workers"
+            f"Starting download of {len(all_datasets)} datasets with {self.max_workers} workers"
         )
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Submit all tasks
-            future_to_dataset = {
-                executor.submit(self.process_dataset, dataset): dataset
-                for dataset in all_datasets
-            }
+        # Progress reporting task
+        async def progress_reporter():
+            while True:
+                await asyncio.sleep(5)  # Report every 5 seconds
+                async with self.stats_lock:
+                    if self.stats["datasets_processed"] >= self.stats["datasets_found"]:
+                        break
+                await self.print_progress()
 
-            # Process completed tasks
-            completed = 0
-            for future in as_completed(future_to_dataset):
-                # dataset = future_to_dataset[future]
-                completed += 1
+        progress_task = asyncio.create_task(progress_reporter())
 
-                try:
-                    success = future.result()
-                    if success:
-                        logger.debug(
-                            f"Successfully processed dataset ({completed}/{len(all_datasets)})"
-                        )
-                    else:
-                        logger.warning(
-                            f"Failed to process dataset ({completed}/{len(all_datasets)})"
-                        )
-                except Exception as e:
-                    logger.error(f"Error processing dataset: {e}")
-                    with self.stats_lock:
-                        self.stats["errors"] += 1
+        # Process in batches to avoid overwhelming memory
+        for i in range(0, len(all_datasets), self.batch_size):
+            batch = all_datasets[i : i + self.batch_size]
 
-                # Log progress every 10 datasets
-                if completed % 10 == 0:
-                    logger.info(
-                        f"Progress: {completed}/{len(all_datasets)} datasets processed"
-                    )
+            # Create semaphore for this batch
+            semaphore = asyncio.Semaphore(self.max_workers)
+
+            async def process_with_semaphore(dataset: Dict):
+                async with semaphore:
+                    try:
+                        return await self.process_dataset(dataset)
+                    except Exception as e:
+                        logger.error(f"Error processing dataset: {e}")
+                        await self.update_stats("errors")
+                        return False
+
+            # Process batch
+            tasks = [process_with_semaphore(dataset) for dataset in batch]
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+            logger.info(
+                f"Completed batch {i // self.batch_size + 1}/"
+                f"{(len(all_datasets) + self.batch_size - 1) // self.batch_size}"
+            )
+
+        # Cancel progress reporter
+        progress_task.cancel()
+        try:
+            await progress_task
+        except asyncio.CancelledError:
+            pass
 
         if self.is_embeddings:
             self.index_buffer.flush()
 
-        # Print statistics
+        # Final statistics
         end_time = datetime.now()
         duration = end_time - self.stats["start_time"]
 
-        logger.info("=" * 50)
+        logger.info("=" * 60)
         logger.info("DOWNLOAD STATISTICS")
-        logger.info("=" * 50)
+        logger.info("=" * 60)
         logger.info(f"Datasets found: {self.stats['datasets_found']}")
-        logger.info(f"Datasets processed: {self.stats['datasets_downloaded']}")
+        logger.info(f"Datasets processed: {self.stats['datasets_processed']}")
         logger.info(f"Files downloaded: {self.stats['files_downloaded']}")
         logger.info(f"Errors: {self.stats['errors']}")
+        logger.info(f"Failed datasets: {len(self.stats['failed_datasets'])}")
+        logger.info(f"Cache hits: {self.stats['cache_hits']}")
+        logger.info(f"Retries: {self.stats['retries']}")
         logger.info(f"Execution time: {duration}")
+        logger.info(
+            f"Average time per dataset: {duration / max(1, self.stats['datasets_processed'])}"
+        )
         logger.info(f"Data saved to: {self.output_dir.absolute()}")
 
-    def download_all_datasets(self):
-        """Wrapper method that calls the parallel version"""
-        self.download_all_datasets_parallel()
 
-
-def main():
+async def async_main():
+    """Async main function with optimized settings"""
     import argparse
 
     parser = argparse.ArgumentParser(description="Download Dresden open data")
@@ -650,18 +795,37 @@ def main():
         help="Directory to save data (default: dresden)",
     )
     parser.add_argument(
+        "--max-workers",
+        "-w",
+        type=int,
+        default=20,
+        help="Number of parallel workers (default: 20)",
+    )
+    parser.add_argument(
         "--delay",
         "-d",
         type=float,
-        default=0.1,
-        help="Delay between requests in seconds (default: 0.1)",
+        default=0.05,
+        help="Delay between requests in seconds (default: 0.05)",
     )
     parser.add_argument(
-        "--workers",
-        "-w",
+        "--batch-size",
+        "-b",
         type=int,
-        default=10,
-        help="Number of parallel workers (default: 10)",
+        default=50,
+        help="Batch size for processing (default: 50)",
+    )
+    parser.add_argument(
+        "--connection-limit",
+        type=int,
+        default=100,
+        help="Total connection pool size (default: 100)",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=1,
+        help="Maximum retry attempts for failed requests (default: 1)",
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     parser.add_argument("--debug", action="store_true", help="Debug output")
@@ -674,13 +838,17 @@ def main():
         logging.getLogger().setLevel(logging.INFO)
 
     try:
-        downloader = DresdenOpenDataDownloader(
+        async with DresdenOpenDataDownloader(
             output_dir=args.output_dir,
+            max_workers=args.max_workers,
             delay=args.delay,
-            max_workers=args.workers,
+            batch_size=args.batch_size,
+            connection_limit=args.connection_limit,
+            max_retries=args.max_retries,
             is_embeddings=True,
-        )
-        downloader.download_all_datasets()
+        ) as downloader:
+            await downloader.download_all_datasets()
+        return 0
 
     except KeyboardInterrupt:
         logger.warning("⚠️ Download interrupted by user")
@@ -695,5 +863,10 @@ def main():
         return 1
 
 
+def main():
+    """Synchronous entry point"""
+    return asyncio.run(async_main())
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

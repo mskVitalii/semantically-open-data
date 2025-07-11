@@ -65,7 +65,7 @@ class VectorDB:
         await self._wait_for_qdrant()
 
         # Setup collection
-        await self._setup_collection()
+        await self.setup_collection()
 
     async def __aenter__(self):
         """Async context manager entry"""
@@ -93,7 +93,7 @@ class VectorDB:
                 else:
                     raise RuntimeError(f"Qdrant failed to become ready: {e}")
 
-    async def _setup_collection(self):
+    async def setup_collection(self):
         """Create Qdrant collection if not exists"""
         collections_response = await self.qdrant.get_collections()
         collections = collections_response.collections

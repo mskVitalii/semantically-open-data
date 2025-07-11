@@ -66,6 +66,7 @@ class DatasetService:
 
     async def bootstrap_datasets(self) -> bool:
         await self.vector_db.remove_collection()
+        await self.vector_db.setup_collection()
         await bootstrap_data()
         return True
 

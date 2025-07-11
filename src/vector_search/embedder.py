@@ -28,7 +28,7 @@ class LocalJinaEmbedder:
         self.model = SentenceTransformer(
             model_name,
             cache_folder="app/cache" if IS_DOCKER else "../../cache",
-            trust_remote_code=False,
+            trust_remote_code=True,
             device=self.device,
             revision="1e94d7f53488267e2a5a07a2656d0c943a8c3710",
             model_kwargs={"default_task": "retrieval"},

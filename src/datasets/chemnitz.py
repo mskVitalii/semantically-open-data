@@ -143,13 +143,6 @@ class ChemnitzDataDownloader:
             except Exception as e:
                 logger.error(f"Error flushing index buffer: {e}")
 
-        # Close VectorDB connection
-        if self.vector_db:
-            try:
-                await self.vector_db.qdrant.close()
-            except Exception as e:
-                logger.error(f"Error closing VectorDB: {e}")
-
         if self.session:
             await self.session.close()
 

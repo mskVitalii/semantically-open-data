@@ -138,13 +138,6 @@ class DresdenOpenDataDownloader:
             except Exception as e:
                 logger.error(f"Error flushing index buffer: {e}")
 
-        # Close VectorDB connection
-        if self.vector_db:
-            try:
-                await self.vector_db.qdrant.close()
-            except Exception as e:
-                logger.error(f"Error closing VectorDB: {e}")
-
     async def update_stats(self, field: str, increment: int = 1):
         """Thread-safe statistics update"""
         async with self.stats_lock:

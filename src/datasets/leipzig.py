@@ -19,7 +19,7 @@ from src.datasets.datasets_metadata import (
 from src.utils.datasets_utils import sanitize_filename, safe_delete
 from src.infrastructure.logger import get_logger
 from src.utils.embeddings_utils import extract_data_content
-from src.vector_search.vector_db import VectorDB, create_vector_db
+from src.vector_search.vector_db import VectorDB, get_vector_db
 from src.vector_search.vector_db_buffer import VectorDBBuffer
 
 logger = get_logger(__name__)
@@ -128,7 +128,7 @@ class LeipzigCSVJSONDownloader:
         )
         # Initialize async VectorDB if embeddings are enabled
         if self.is_embeddings:
-            self.vector_db = await create_vector_db(use_grpc=True)
+            self.vector_db = await get_vector_db(use_grpc=True)
             self.vector_db_buffer = VectorDBBuffer(
                 self.vector_db, buffer_size=100, auto_flush=True
             )

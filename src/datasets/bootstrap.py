@@ -10,6 +10,8 @@ from src.utils.datasets_utils import safe_delete
 
 logger = get_logger(__name__)
 
+# TODO: Paths are wrong
+
 
 async def download_berlin():
     """Download Berlin datasets."""

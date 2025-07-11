@@ -139,9 +139,9 @@ class VectorDBBuffer:
 # Example usage:
 async def main():
     # Initialize AsyncVectorDB
-    from src.vector_search.vector_db import create_vector_db
+    from src.vector_search.vector_db import get_vector_db
 
-    vector_db_main = await create_vector_db(use_grpc=True)
+    vector_db_main = await get_vector_db(use_grpc=True)
 
     try:
         # Create buffer with auto-flush at 100 records
@@ -187,9 +187,9 @@ async def main():
 
 # Example 3: Concurrent operations
 async def concurrent_example():
-    from src.vector_search.vector_db import create_vector_db
+    from src.vector_search.vector_db import get_vector_db
 
-    vector_db = await create_vector_db(use_grpc=True)
+    vector_db = await get_vector_db(use_grpc=True)
 
     try:
         async with VectorDBBuffer(vector_db, buffer_size=100) as buffer:

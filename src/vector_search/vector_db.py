@@ -271,9 +271,13 @@ class VectorDB:
             raise
 
 
-# Helper function to create and initialize the async client
-async def create_vector_db(use_grpc: bool = True) -> VectorDB:
-    """Factory function to create and initialize AsyncVectorDB"""
-    db = VectorDB(use_grpc=use_grpc)
-    await db.initialize()
-    return db
+vector_db: VectorDB | None = None
+
+
+async def get_vector_db(use_grpc: bool = True) -> VectorDB:
+    """Helper function to create and initialize the async QDrant client"""
+    global vector_db
+    if vector_db is None:
+        vector_db = VectorDB(use_grpc=use_grpc)
+        await vector_db.initialize()
+    return vector_db

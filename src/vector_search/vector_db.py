@@ -20,7 +20,7 @@ from src.infrastructure.config import (
     QDRANT_HOST,
     QDRANT_HTTP_PORT,
     EMBEDDING_DIM,
-    COLLECTION_NAME,
+    QDRANT_COLLECTION_NAME,
 )
 from src.vector_search.embedder import LocalJinaEmbedder
 
@@ -88,10 +88,10 @@ class VectorDB:
     def _setup_collection(self):
         """Create Qdrant collection if not exists"""
         collections = self.qdrant.get_collections().collections
-        if not any(c.name == COLLECTION_NAME for c in collections):
-            logger.info(f"Creating collection {COLLECTION_NAME}")
+        if not any(c.name == QDRANT_COLLECTION_NAME for c in collections):
+            logger.info(f"Creating collection {QDRANT_COLLECTION_NAME}")
             self.qdrant.create_collection(
-                collection_name=COLLECTION_NAME,
+                collection_name=QDRANT_COLLECTION_NAME,
                 vectors_config=VectorParams(
                     size=EMBEDDING_DIM, distance=Distance.COSINE
                 ),
@@ -100,13 +100,13 @@ class VectorDB:
             # Create indexes for filtering
             for field in ["city", "organization"]:
                 self.qdrant.create_payload_index(
-                    collection_name=COLLECTION_NAME,
+                    collection_name=QDRANT_COLLECTION_NAME,
                     field_name=field,
                     field_schema=PayloadSchemaType.KEYWORD,
                 )
             logger.info("Collection created with indexes")
         else:
-            logger.info(f"Collection {COLLECTION_NAME} already exists")
+            logger.info(f"Collection {QDRANT_COLLECTION_NAME} already exists")
 
     def index_datasets(
         self, datasets: List[DatasetMetadataWithContent], batch_size: int = 100
@@ -131,7 +131,7 @@ class VectorDB:
         for i in range(0, total_points, batch_size):
             batch = points[i : i + batch_size]
             self.qdrant.upsert(
-                collection_name=COLLECTION_NAME,
+                collection_name=QDRANT_COLLECTION_NAME,
                 points=batch,
                 wait=True,  # Ensure consistency
             )
@@ -162,7 +162,7 @@ class VectorDB:
 
         # Use query_points (works with both gRPC and HTTP)
         query_result = self.qdrant.query_points(
-            collection_name=COLLECTION_NAME,
+            collection_name=QDRANT_COLLECTION_NAME,
             query=query_embedding.tolist(),
             query_filter=search_filter,
             limit=limit,
@@ -191,7 +191,7 @@ class VectorDB:
 
         # Batch query - very efficient with gRPC
         batch_results = self.qdrant.query_batch_points(
-            collection_name=COLLECTION_NAME,
+            collection_name=QDRANT_COLLECTION_NAME,
             requests=[
                 QueryRequest(
                     query=emb.tolist(),
@@ -214,10 +214,41 @@ class VectorDB:
 
     def get_stats(self):
         """Get collection statistics"""
-        info = self.qdrant.get_collection(COLLECTION_NAME)
+        info = self.qdrant.get_collection(QDRANT_COLLECTION_NAME)
         logger.info("\nCollection stats:")
         logger.info(f"  Vectors count: {info.vectors_count}")
         logger.info(f"  Points count: {info.points_count}")
         logger.info(f"  Indexed vectors: {info.indexed_vectors_count}")
         logger.info(f"  Protocol: {'gRPC' if self.use_grpc else 'HTTP'}")
         return info
+
+    async def remove_collection(
+        self, collection_name: str = QDRANT_COLLECTION_NAME
+    ) -> bool:
+        """
+        Remove a collection from Qdrant.
+
+        Args:
+            collection_name: Name of the collection to remove.
+                            Defaults to QDRANT_COLLECTION_NAME if not provided.
+
+        Returns:
+            bool: True if collection was removed successfully, False otherwise.
+        """
+        try:
+            # Check if collection exists
+            collections = self.qdrant.get_collections().collections
+            if not any(c.name == collection_name for c in collections):
+                logger.warning(f"Collection '{collection_name}' does not exist")
+                return False
+
+            # Delete the collection
+            logger.info(f"Removing collection '{collection_name}'...")
+            self.qdrant.delete_collection(collection_name=collection_name)
+
+            logger.info(f"✅ Collection '{collection_name}' removed successfully")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to remove collection '{collection_name}': {e}")
+            raise

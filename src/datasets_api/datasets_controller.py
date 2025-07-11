@@ -24,3 +24,14 @@ async def search_datasets(
         return await service.search_datasets(request)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/bootstrap_datasets")
+async def bootstrap_datasets(
+    service: DatasetService = Depends(get_dataset_service),
+):
+    try:
+        result = await service.bootstrap_datasets()
+        return {"ok": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -12,7 +12,6 @@ dependencies = [
     "pandas>=2.3.0",
     "peft>=0.16.0",
     "playwright>=1.53.0",
-    "pytest-asyncio>=1.0.0",
     "qdrant-client>=1.14.1",
     "requests>=2.32.4",
     "sentence-transformers>=5.0.0",
@@ -26,6 +25,7 @@ dependencies = [
 dev = [
     "ruff>=0.12.2",
     "pytest>=8.4.1",
+    "pytest-asyncio>=1.0.0",
     "taskipy>=1.14.1",
 ]
 

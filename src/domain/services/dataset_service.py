@@ -1,3 +1,4 @@
+from ...datasets.bootstrap import bootstrap_data
 from ...datasets.datasets_metadata import DatasetMetadataWithContent
 from ...datasets_api.datasets_dto import (
     DatasetSearchRequest,
@@ -61,6 +62,11 @@ class DatasetService:
             limit=request.limit,
             offset=request.offset,
         )
+
+    async def bootstrap_datasets(self) -> bool:
+        await self.vector_db.remove_collection()
+        await bootstrap_data()
+        return True
 
 
 def get_dataset_service() -> DatasetService:

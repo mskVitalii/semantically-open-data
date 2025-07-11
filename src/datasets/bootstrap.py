@@ -6,19 +6,19 @@ from src.datasets.chemnitz import ChemnitzDataDownloader
 from src.datasets.dresden import DresdenOpenDataDownloader
 from src.datasets.leipzig import LeipzigCSVJSONDownloader
 from src.infrastructure.logger import get_logger
+from src.infrastructure.paths import PROJECT_ROOT
 from src.utils.datasets_utils import safe_delete
 
 logger = get_logger(__name__)
 
-# TODO: Paths are wrong
-
 
 async def download_berlin():
     """Download Berlin datasets."""
-    safe_delete(Path("berlin"), logger)
+    path = PROJECT_ROOT / "src" / "datasets" / "berlin"
+    safe_delete(path, logger)
 
     async with BerlinOpenDataDownloader(
-        output_dir="berlin",
+        output_dir=path,
         max_workers=20,
         delay=0.05,
         batch_size=50,
@@ -31,16 +31,16 @@ async def download_berlin():
 
 async def download_chemnitz():
     """Download Chemnitz datasets."""
-    safe_delete(Path("chemnitz"), logger)
-
     csv_file = "open_data_portal_stadt_chemnitz.csv"
     if not Path(csv_file).exists():
         logger.error(f"❌ File {csv_file} not found!")
         return
 
+    path = PROJECT_ROOT / "src" / "datasets" / "chemnitz"
+    safe_delete(path, logger)
     async with ChemnitzDataDownloader(
         csv_file,
-        output_dir="chemnitz",
+        output_dir=path,
         max_workers=20,
         delay=0.05,
         batch_size=50,
@@ -54,10 +54,11 @@ async def download_chemnitz():
 
 async def download_leipzig():
     """Download Leipzig datasets."""
-    safe_delete(Path("leipzig"), logger)
+    path = PROJECT_ROOT / "src" / "datasets" / "leipzig"
+    safe_delete(path, logger)
 
     async with LeipzigCSVJSONDownloader(
-        output_dir="leipzig",
+        output_dir=path,
         max_workers=20,
         delay=0.05,
         batch_size=50,
@@ -70,10 +71,11 @@ async def download_leipzig():
 
 async def download_dresden():
     """Download Dresden datasets."""
-    safe_delete(Path("dresden"), logger)
+    path = PROJECT_ROOT / "src" / "datasets" / "dresden"
+    safe_delete(path, logger)
 
     async with DresdenOpenDataDownloader(
-        output_dir="dresden",
+        output_dir=path,
         max_workers=20,
         delay=0.05,
         batch_size=50,

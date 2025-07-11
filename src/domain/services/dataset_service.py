@@ -1,6 +1,5 @@
 from fastapi import Depends
 
-from dependencies import get_vector_db
 from ...datasets.bootstrap import bootstrap_data
 from ...datasets.datasets_metadata import DatasetMetadataWithContent
 from ...datasets_api.datasets_dto import (
@@ -9,8 +8,7 @@ from ...datasets_api.datasets_dto import (
     DatasetResponse,
 )
 from ...infrastructure.logger import get_logger
-from ...vector_search.vector_db import VectorDB
-
+from ...vector_search.vector_db import VectorDB, get_vector_db
 
 logger = get_logger(__name__)
 

@@ -22,7 +22,7 @@ from src.infrastructure.config import (
     EMBEDDING_DIM,
     QDRANT_COLLECTION_NAME,
 )
-from src.vector_search.embedder import embedder
+from src.vector_search.embedder import get_embedder
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class VectorDB:
         # Use environment variable if not explicitly set
         self.use_grpc = use_grpc if use_grpc is not None else USE_GRPC
         self.qdrant: AsyncQdrantClient | None = None
-        self.embedder = embedder
+        self.embedder = get_embedder()
 
     async def initialize(self):
         """Async initialization of client and resources"""

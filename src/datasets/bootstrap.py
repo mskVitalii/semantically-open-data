@@ -31,7 +31,7 @@ async def download_berlin():
 
 async def download_chemnitz():
     """Download Chemnitz datasets."""
-    csv_file = "open_data_portal_stadt_chemnitz.csv"
+    csv_file = PROJECT_ROOT / "src" / "datasets" / "open_data_portal_stadt_chemnitz.csv"
     if not Path(csv_file).exists():
         logger.error(f"❌ File {csv_file} not found!")
         return

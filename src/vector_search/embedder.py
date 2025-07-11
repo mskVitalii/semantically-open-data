@@ -35,7 +35,7 @@ class LocalJinaEmbedder:
         )
         self.dimensions = dimensions
 
-        logger.info("Model loaded")
+        logger.info(f"Model {model_name} loaded")
 
     def embed(self, text: str) -> np.ndarray:
         """Embed single text"""
@@ -55,10 +55,13 @@ class LocalJinaEmbedder:
             normalize_embeddings=True,
             convert_to_numpy=True,
             batch_size=batch_size,
-            show_progress_bar=True,
+            show_progress_bar=False,
         )
         # Truncate each embedding
         return [emb[: self.dimensions] for emb in embeddings]
+
+    def __del__(self):
+        logger.warning("LocalJinaEmbedder instance is being deleted".upper())
 
 
 _embedder_instance = None

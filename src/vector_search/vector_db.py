@@ -74,8 +74,12 @@ class VectorDB:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit"""
+        logger.warning("VectorDB __aexit__".upper())
         if self.qdrant:
             await self.qdrant.close()
+
+    def __del__(self):
+        logger.warning("VectorDB instance is being deleted".upper())
 
     async def _wait_for_qdrant(self, max_retries: int = 10, retry_delay: int = 2):
         """Wait for Qdrant to be ready"""
@@ -275,7 +279,7 @@ vector_db: VectorDB | None = None
 
 
 async def get_vector_db(use_grpc: bool = True) -> VectorDB:
-    """Helper function to create and initialize the async QDrant client"""
+    """Helper function to create and initialize the async Qdrant client"""
     global vector_db
     if vector_db is None:
         vector_db = VectorDB(use_grpc=use_grpc)

@@ -1,9 +1,12 @@
+import asyncio
 import time
+from contextlib import asynccontextmanager
 
 from src.datasets.datasets_metadata import DatasetMetadataWithContent
 from src.datasets_api.router import v1_router
 from src.infrastructure.config import USE_GRPC
 from src.infrastructure.logger import get_logger
+from src.vector_search.embedder import get_embedder
 from src.vector_search.vector_db import VectorDB
 
 
@@ -11,10 +14,18 @@ from fastapi import FastAPI
 
 logger = get_logger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await asyncio.to_thread(get_embedder)
+    yield
+
+
 app = FastAPI(
     title="Semantic Open Data API",
     description="API to semantically search datasets. Responses to the questions",
     version="1.0.0",
+    lifespan=lifespan,
 )
 app.include_router(v1_router)
 

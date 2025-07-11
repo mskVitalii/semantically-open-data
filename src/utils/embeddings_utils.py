@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Data Extraction Utilities
+Data Extraction Utilities (Async Version)
 Functions to extract schemas, examples, and convert data to searchable strings
 """
 
 import json
+from functools import partial
+
 import pandas as pd
 from pathlib import Path
 from typing import List, Dict, Any, Union
@@ -14,10 +16,16 @@ import gzip
 import bz2
 import lzma
 import tarfile
+import asyncio
+import aiofiles
+from concurrent.futures import ThreadPoolExecutor
 
 from src.infrastructure.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Thread pool for CPU-bound operations
+executor = ThreadPoolExecutor()
 
 
 # =============================================================================
@@ -25,7 +33,7 @@ logger = get_logger(__name__)
 # =============================================================================
 
 
-def extract_comprehensive_text(dataset_path: Path) -> str:
+async def extract_comprehensive_text(dataset_path: Path) -> str:
     """
     Extract searchable text from all available sources
 
@@ -42,10 +50,10 @@ def extract_comprehensive_text(dataset_path: Path) -> str:
         return ""
 
     # 1. Metadata (always available)
-    metadata_text = extract_metadata_text(dataset_path / "metadata.json")
+    metadata_text = await extract_metadata_text(dataset_path / "metadata.json")
 
     # 2. Data content (CSV/JSON files)
-    content_text = extract_data_content(dataset_path)
+    content_text = await extract_data_content(dataset_path)
 
     combined_text = f"""METADATA: {metadata_text}
 CONTENT: {content_text}""".strip()
@@ -53,14 +61,15 @@ CONTENT: {content_text}""".strip()
     return combined_text
 
 
-def extract_metadata_text(metadata_file: Path) -> str:
+async def extract_metadata_text(metadata_file: Path) -> str:
     if not metadata_file.exists():
         logger.warning(f"Metadata file not found: {metadata_file}")
         return ""
 
     try:
-        with open(metadata_file, "r", encoding="utf-8") as f:
-            metadata = json.load(f)
+        async with aiofiles.open(metadata_file, "r", encoding="utf-8") as f:
+            content = await f.read()
+            metadata = json.loads(content)
         return format_metadata_text(metadata)
 
     except Exception as e:
@@ -79,7 +88,7 @@ def format_metadata_text(metadata: dict) -> str:
     return result
 
 
-def extract_data_content(dataset_path: Path) -> str:
+async def extract_data_content(dataset_path: Path) -> str:
     """
     Extract example data content from CSV/JSON files
 
@@ -90,34 +99,28 @@ def extract_data_content(dataset_path: Path) -> str:
         Formatted example data text
     """
     content_parts = []
+    tasks = []
 
     # Process CSV files
     csv_files = list(dataset_path.glob("*.csv"))
     for csv_file in csv_files:
-        try:
-            example = get_csv_example(csv_file)
-            if example:
-                formatted = json_to_searchable_string(
-                    example, format_style="key_value", max_length=200
-                )
-                content_parts.append(f"CSV_DATA: {formatted}")
-                logger.debug(f"Extracted CSV content from {csv_file.name}")
-        except Exception as e:
-            logger.warning(f"Failed to extract CSV content from {csv_file}: {e}")
+        task = process_csv_file(csv_file)
+        tasks.append(task)
 
     # Process JSON files (skip metadata.json)
     json_files = [f for f in dataset_path.glob("*.json") if f.name != "metadata.json"]
     for json_file in json_files:
-        try:
-            example = get_json_example(json_file)
-            if example:
-                formatted = json_to_searchable_string(
-                    example, format_style="key_value", max_length=200
-                )
-                content_parts.append(f"JSON_DATA: {formatted}")
-                logger.debug(f"Extracted JSON content from {json_file.name}")
-        except Exception as e:
-            logger.warning(f"Failed to extract JSON content from {json_file}: {e}")
+        task = process_json_file(json_file)
+        tasks.append(task)
+
+    # Wait for all tasks to complete
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for result in results:
+        if isinstance(result, str) and result:
+            content_parts.append(result)
+        elif isinstance(result, Exception):
+            logger.warning(f"Task failed with error: {result}")
 
     result = " ".join(content_parts)
     logger.debug(
@@ -126,12 +129,42 @@ def extract_data_content(dataset_path: Path) -> str:
     return result
 
 
+async def process_csv_file(csv_file: Path) -> str:
+    """Process a single CSV file asynchronously"""
+    try:
+        example = await get_csv_example(csv_file)
+        if example:
+            formatted = json_to_searchable_string(
+                example, format_style="key_value", max_length=200
+            )
+            logger.debug(f"Extracted CSV content from {csv_file.name}")
+            return f"CSV_DATA: {formatted}"
+    except Exception as e:
+        logger.warning(f"Failed to extract CSV content from {csv_file}: {e}")
+    return ""
+
+
+async def process_json_file(json_file: Path) -> str:
+    """Process a single JSON file asynchronously"""
+    try:
+        example = await get_json_example(json_file)
+        if example:
+            formatted = json_to_searchable_string(
+                example, format_style="key_value", max_length=200
+            )
+            logger.debug(f"Extracted JSON content from {json_file.name}")
+            return f"JSON_DATA: {formatted}"
+    except Exception as e:
+        logger.warning(f"Failed to extract JSON content from {json_file}: {e}")
+    return ""
+
+
 # =============================================================================
 # SCHEMA EXTRACTION FUNCTIONS
 # =============================================================================
 
 
-def get_csv_schema(file_path: Union[str, Path]) -> List[str]:
+async def get_csv_schema(file_path: Union[str, Path]) -> List[str]:
     """
     Extract column headers (schema) from CSV file
 
@@ -152,8 +185,10 @@ def get_csv_schema(file_path: Union[str, Path]) -> List[str]:
         raise FileNotFoundError(f"CSV file not found: {file_path}")
 
     try:
-        # Read only the header (0 rows of data)
-        df = pd.read_csv(file_path, nrows=0)
+        # Read CSV header in thread pool (pandas is not async)
+        df = await asyncio.get_event_loop().run_in_executor(
+            executor, partial(pd.read_csv, file_path, nrows=0)
+        )
         fields = df.columns.tolist()
         logger.debug(f"Extracted {len(fields)} fields from CSV: {file_path.name}")
         return fields
@@ -167,7 +202,7 @@ def get_csv_schema(file_path: Union[str, Path]) -> List[str]:
         raise
 
 
-def get_json_schema(file_path: Union[str, Path], max_depth: int = 3) -> List[str]:
+async def get_json_schema(file_path: Union[str, Path], max_depth: int = 3) -> List[str]:
     """
     Extract field names (schema) from JSON file
 
@@ -189,8 +224,9 @@ def get_json_schema(file_path: Union[str, Path], max_depth: int = 3) -> List[str
         raise FileNotFoundError(f"JSON file not found: {file_path}")
 
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
+            content = await f.read()
+            data = json.loads(content)
 
         fields = _extract_json_fields(data, max_depth=max_depth)
         logger.debug(f"Extracted {len(fields)} fields from JSON: {file_path.name}")
@@ -253,7 +289,9 @@ def _extract_json_fields(
 # =============================================================================
 
 
-def get_csv_example(file_path: Union[str, Path], row_index: int = 0) -> Dict[str, Any]:
+async def get_csv_example(
+    file_path: Union[str, Path], row_index: int = 0
+) -> Dict[str, Any]:
     """
     Extract one example row from CSV file
 
@@ -288,9 +326,11 @@ def get_csv_example(file_path: Union[str, Path], row_index: int = 0) -> Dict[str
 
     for encoding in encodings:
         try:
-            # Read minimal data (just the row we need + headers)
-            df = pd.read_csv(file_path, nrows=row_index + 1, encoding=encoding)
-
+            # Read CSV in thread pool (pandas is not async)
+            df = await asyncio.get_event_loop().run_in_executor(
+                executor,
+                partial(pd.read_csv, file_path, nrows=row_index + 1, encoding=encoding),
+            )
             if df.empty or len(df) <= row_index:
                 logger.warning(f"Row index {row_index} not found in CSV {file_path}")
                 raise IndexError(f"Row index {row_index} not found in CSV")
@@ -326,7 +366,7 @@ def get_csv_example(file_path: Union[str, Path], row_index: int = 0) -> Dict[str
     raise ValueError("Unable to decode CSV file with any of the attempted encodings")
 
 
-def get_json_example(
+async def get_json_example(
     file_path: Union[str, Path], object_index: int = 0
 ) -> Dict[str, Any]:
     """
@@ -352,115 +392,26 @@ def get_json_example(
 
     try:
         # Check file type by reading magic bytes
-        with open(file_path, "rb") as f:
-            magic_bytes = f.read(4)
-            f.seek(0)
+        async with aiofiles.open(file_path, "rb") as f:
+            magic_bytes = await f.read(4)
 
-        # Check if it's a tar.gz file (gzipped tar)
+        # Handle compressed files in thread pool
         if magic_bytes[:2] == b"\x1f\x8b":
-            # Could be gzip or tar.gz, need to check further
-            try:
-                with tarfile.open(file_path, "r:gz") as tar:
-                    # It's a tar.gz file
-                    logger.debug(f"Detected tar.gz archive: {file_path.name}")
-
-                    # Find JSON files in the archive
-                    json_members = [
-                        m
-                        for m in tar.getmembers()
-                        if m.name.endswith(".json") and m.isfile()
-                    ]
-
-                    if not json_members:
-                        raise ValueError(
-                            f"No JSON files found in tar.gz archive {file_path.name}"
-                        )
-
-                    # Use the first JSON file found
-                    json_member = json_members[0]
-                    logger.debug(f"Extracting {json_member.name} from archive")
-
-                    # Extract and read the JSON file
-                    json_file = tar.extractfile(json_member)
-                    if json_file is None:
-                        raise ValueError(
-                            f"Could not extract {json_member.name} from archive"
-                        )
-
-                    content = json_file.read().decode("utf-8")
-                    data = json.loads(content)
-
-            except tarfile.ReadError:
-                # Not a tar file, treat as regular gzip
-                logger.debug(
-                    f"Not a tar.gz, treating as gzipped JSON: {file_path.name}"
-                )
-                with gzip.open(file_path, "rt", encoding="utf-8") as f:
-                    data = json.load(f)
-
+            # Could be gzip or tar.gz
+            data = await asyncio.get_event_loop().run_in_executor(
+                executor, _handle_gzip_file, file_path
+            )
         elif magic_bytes[:3] == b"BZh" or file_path.suffix == ".bz2":
-            logger.debug(f"Detected bzip2 compressed file: {file_path.name}")
-            with bz2.open(file_path, "rt", encoding="utf-8") as f:
-                data = json.load(f)
-
+            data = await asyncio.get_event_loop().run_in_executor(
+                executor, _handle_bz2_file, file_path
+            )
         elif magic_bytes[:6] == b"\xfd7zXZ\x00" or file_path.suffix in [".xz", ".lzma"]:
-            logger.debug(f"Detected xz/lzma compressed file: {file_path.name}")
-            with lzma.open(file_path, "rt", encoding="utf-8") as f:
-                data = json.load(f)
-
+            data = await asyncio.get_event_loop().run_in_executor(
+                executor, _handle_lzma_file, file_path
+            )
         else:
             # Not compressed - try different encodings
-            encodings = [
-                "utf-8",
-                "utf-16-le",  # UTF-16 Little Endian without BOM
-                "utf-16-be",  # UTF-16 Big Endian without BOM
-                "utf-16",  # UTF-16 with BOM
-                "latin-1",
-                "iso-8859-1",
-                "cp1252",
-            ]
-
-            data = None
-            last_error = None
-
-            for encoding in encodings:
-                try:
-                    with open(file_path, "r", encoding=encoding) as f:
-                        content = f.read()
-                        if not content.strip():
-                            raise ValueError(f"File {file_path.name} is empty")
-                        data = json.loads(content)
-                    logger.debug(
-                        f"Successfully loaded {file_path.name} with {encoding} encoding"
-                    )
-                    break
-                except UnicodeDecodeError as e:
-                    last_error = e
-                    logger.debug(
-                        f"Failed to decode {file_path.name} with {encoding}: {str(e)}"
-                    )
-                    continue
-                except json.JSONDecodeError as e:
-                    last_error = e
-                    logger.debug(
-                        f"Failed to parse JSON from {file_path.name} with {encoding}: {str(e)}"
-                    )
-                    continue
-                except Exception as e:
-                    logger.error(
-                        f"Unexpected error reading {file_path.name} with {encoding}: {str(e)}"
-                    )
-                    raise
-
-            if data is None:
-                error_msg = (
-                    f"Could not load JSON from {file_path.name} with any encoding. "
-                )
-                if last_error:
-                    error_msg += (
-                        f"Last error: {type(last_error).__name__}: {str(last_error)}"
-                    )
-                raise ValueError(error_msg)
+            data = await _read_json_with_encodings(file_path)
 
         # Process the loaded JSON data
         if isinstance(data, list):
@@ -497,8 +448,109 @@ def get_json_example(
         raise
 
 
+def _handle_gzip_file(file_path: Path) -> Any:
+    """Handle gzip or tar.gz files synchronously"""
+    try:
+        with tarfile.open(file_path, "r:gz") as tar:
+            # It's a tar.gz file
+            logger.debug(f"Detected tar.gz archive: {file_path.name}")
+
+            # Find JSON files in the archive
+            json_members = [
+                m for m in tar.getmembers() if m.name.endswith(".json") and m.isfile()
+            ]
+
+            if not json_members:
+                raise ValueError(
+                    f"No JSON files found in tar.gz archive {file_path.name}"
+                )
+
+            # Use the first JSON file found
+            json_member = json_members[0]
+            logger.debug(f"Extracting {json_member.name} from archive")
+
+            # Extract and read the JSON file
+            json_file = tar.extractfile(json_member)
+            if json_file is None:
+                raise ValueError(f"Could not extract {json_member.name} from archive")
+
+            content = json_file.read().decode("utf-8")
+            return json.loads(content)
+
+    except tarfile.ReadError:
+        # Not a tar file, treat as regular gzip
+        logger.debug(f"Not a tar.gz, treating as gzipped JSON: {file_path.name}")
+        with gzip.open(file_path, "rt", encoding="utf-8") as f:
+            return json.load(f)
+
+
+def _handle_bz2_file(file_path: Path) -> Any:
+    """Handle bzip2 compressed files"""
+    logger.debug(f"Detected bzip2 compressed file: {file_path.name}")
+    with bz2.open(file_path, "rt", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _handle_lzma_file(file_path: Path) -> Any:
+    """Handle xz/lzma compressed files"""
+    logger.debug(f"Detected xz/lzma compressed file: {file_path.name}")
+    with lzma.open(file_path, "rt", encoding="utf-8") as f:
+        return json.load(f)
+
+
+async def _read_json_with_encodings(file_path: Path) -> Any:
+    """Try reading JSON file with different encodings"""
+    encodings = [
+        "utf-8",
+        "utf-16-le",  # UTF-16 Little Endian without BOM
+        "utf-16-be",  # UTF-16 Big Endian without BOM
+        "utf-16",  # UTF-16 with BOM
+        "latin-1",
+        "iso-8859-1",
+        "cp1252",
+    ]
+
+    data = None
+    last_error = None
+
+    for encoding in encodings:
+        try:
+            async with aiofiles.open(file_path, "r", encoding=encoding) as f:
+                content = await f.read()
+                if not content.strip():
+                    raise ValueError(f"File {file_path.name} is empty")
+                data = json.loads(content)
+            logger.debug(
+                f"Successfully loaded {file_path.name} with {encoding} encoding"
+            )
+            break
+        except UnicodeDecodeError as e:
+            last_error = e
+            logger.debug(f"Failed to decode {file_path.name} with {encoding}: {str(e)}")
+            continue
+        except json.JSONDecodeError as e:
+            last_error = e
+            logger.debug(
+                f"Failed to parse JSON from {file_path.name} with {encoding}: {str(e)}"
+            )
+            continue
+        except Exception as e:
+            logger.error(
+                f"Unexpected error reading {file_path.name} with {encoding}: {str(e)}"
+            )
+            raise
+
+    if data is None:
+        error_msg = f"Could not load JSON from {file_path.name} with any encoding. "
+        if last_error:
+            error_msg += f"Last error: {type(last_error).__name__}: {str(last_error)}"
+        raise ValueError(error_msg)
+
+    return data
+
+
 # =============================================================================
-# JSON TO STRING CONVERSION FUNCTIONS
+# JSON TO STRING CONVERSION FUNCTIONS (These remain synchronous as they're CPU-bound)
 # =============================================================================
 
 
@@ -696,8 +748,10 @@ if __name__ == "__main__":
 
     logger.info(f"Testing directory: {args.directory}")
 
-    # Run tests
-    dir_path = Path(args.directory)
+    # Run async tests
+    async def main():
+        dir_path = Path(args.directory)
+        text_for_embeddings = await extract_comprehensive_text(dir_path)
+        logger.info(f"""\n\n\n{text_for_embeddings}\n\n\n""")
 
-    text_for_embeddings = extract_comprehensive_text(dir_path)
-    logger.info(f"""\n\n\n{text_for_embeddings}\n\n\n""")
+    asyncio.run(main())

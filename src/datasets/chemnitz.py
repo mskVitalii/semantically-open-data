@@ -385,11 +385,7 @@ class ChemnitzDataDownloader:
                 await self.update_stats("files_downloaded")
 
                 if self.is_embeddings:
-                    # Run CPU-bound operation in thread pool
-                    loop = asyncio.get_event_loop()
-                    package_meta.content = await loop.run_in_executor(
-                        None, extract_data_content, dataset_dir
-                    )
+                    package_meta.content = await extract_data_content(dataset_dir)
                     async with self.index_lock:
                         self.index_buffer.add(package_meta)
             else:

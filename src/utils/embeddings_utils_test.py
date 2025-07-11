@@ -3,6 +3,7 @@ import logging
 import shutil
 import tempfile
 from pathlib import Path
+import asyncio
 
 import pandas as pd
 import pytest
@@ -93,7 +94,10 @@ def nested_json_data():
 # =============================================================================
 
 
-def test_extract_comprehensive_text_success(temp_dir, sample_metadata, sample_csv_data):
+@pytest.mark.asyncio
+async def test_extract_comprehensive_text_success(
+    temp_dir, sample_metadata, sample_csv_data
+):
     """Test successful comprehensive text extraction"""
     # Setup
     metadata_file = temp_dir / "metadata.json"
@@ -105,7 +109,7 @@ def test_extract_comprehensive_text_success(temp_dir, sample_metadata, sample_cs
     sample_csv_data.to_csv(csv_file, index=False)
 
     # Test
-    result = extract_comprehensive_text(temp_dir)
+    result = await extract_comprehensive_text(temp_dir)
 
     # Assert
     assert "METADATA:" in result
@@ -114,9 +118,10 @@ def test_extract_comprehensive_text_success(temp_dir, sample_metadata, sample_cs
     assert "CSV_DATA:" in result
 
 
-def test_extract_comprehensive_text_missing_path():
+@pytest.mark.asyncio
+async def test_extract_comprehensive_text_missing_path():
     """Test comprehensive text extraction with non-existent path"""
-    result = extract_comprehensive_text(Path("/non/existent/path"))
+    result = await extract_comprehensive_text(Path("/non/existent/path"))
     assert result == ""
 
 
@@ -125,36 +130,40 @@ def test_extract_comprehensive_text_missing_path():
 # =============================================================================
 
 
-def test_extract_metadata_text_success(temp_dir, sample_metadata):
+@pytest.mark.asyncio
+async def test_extract_metadata_text_success(temp_dir, sample_metadata):
     """Test successful metadata extraction"""
     metadata_file = temp_dir / "metadata.json"
     with open(metadata_file, "w") as f:
         json.dump(sample_metadata, f)
 
-    result = extract_metadata_text(metadata_file)
+    result = await extract_metadata_text(metadata_file)
 
     assert "title: Test Dataset" in result
     assert "description: A test dataset for unit testing" in result
     assert "author: Test Author" in result
 
 
-def test_extract_metadata_text_missing_file():
+@pytest.mark.asyncio
+async def test_extract_metadata_text_missing_file():
     """Test metadata extraction with missing file"""
-    result = extract_metadata_text(Path("/non/existent/metadata.json"))
+    result = await extract_metadata_text(Path("/non/existent/metadata.json"))
     assert result == ""
 
 
-def test_extract_metadata_text_invalid_json(temp_dir):
+@pytest.mark.asyncio
+async def test_extract_metadata_text_invalid_json(temp_dir):
     """Test metadata extraction with invalid JSON"""
     metadata_file = temp_dir / "metadata.json"
     with open(metadata_file, "w") as f:
         f.write("invalid json content")
 
-    result = extract_metadata_text(metadata_file)
+    result = await extract_metadata_text(metadata_file)
     assert result == ""
 
 
-def test_extract_metadata_text_empty_values(temp_dir):
+@pytest.mark.asyncio
+async def test_extract_metadata_text_empty_values(temp_dir):
     """Test metadata extraction with empty string values"""
     metadata = {
         "title": "Test",
@@ -166,7 +175,7 @@ def test_extract_metadata_text_empty_values(temp_dir):
     with open(metadata_file, "w") as f:
         json.dump(metadata, f)
 
-    result = extract_metadata_text(metadata_file)
+    result = await extract_metadata_text(metadata_file)
 
     assert "title: Test" in result
     assert "valid: Valid content" in result
@@ -179,36 +188,39 @@ def test_extract_metadata_text_empty_values(temp_dir):
 # =============================================================================
 
 
-def test_extract_data_content_csv(temp_dir, sample_csv_data):
+@pytest.mark.asyncio
+async def test_extract_data_content_csv(temp_dir, sample_csv_data):
     """Test data content extraction from CSV files"""
     csv_file = temp_dir / "data.csv"
     sample_csv_data.to_csv(csv_file, index=False)
 
-    result = extract_data_content(temp_dir)
+    result = await extract_data_content(temp_dir)
 
     assert "CSV_DATA:" in result
     assert "Alice" in result or "Bob" in result  # At least one name should be present
 
 
-def test_extract_data_content_json(temp_dir, sample_json_data):
+@pytest.mark.asyncio
+async def test_extract_data_content_json(temp_dir, sample_json_data):
     """Test data content extraction from JSON files"""
     json_file = temp_dir / "data.json"
     with open(json_file, "w") as f:
         json.dump(sample_json_data, f)
 
-    result = extract_data_content(temp_dir)
+    result = await extract_data_content(temp_dir)
 
     assert "JSON_DATA:" in result
     assert "Widget" in result or "Gadget" in result
 
 
-def test_extract_data_content_skip_metadata(temp_dir, sample_metadata):
+@pytest.mark.asyncio
+async def test_extract_data_content_skip_metadata(temp_dir, sample_metadata):
     """Test that metadata.json is skipped in data content extraction"""
     metadata_file = temp_dir / "metadata.json"
     with open(metadata_file, "w") as f:
         json.dump(sample_metadata, f)
 
-    result = extract_data_content(temp_dir)
+    result = await extract_data_content(temp_dir)
 
     # Should not contain metadata content as data
     assert "JSON_DATA:" not in result or "Test Dataset" not in result
@@ -219,39 +231,43 @@ def test_extract_data_content_skip_metadata(temp_dir, sample_metadata):
 # =============================================================================
 
 
-def test_get_csv_schema_success(temp_dir, sample_csv_data):
+@pytest.mark.asyncio
+async def test_get_csv_schema_success(temp_dir, sample_csv_data):
     """Test successful CSV schema extraction"""
     csv_file = temp_dir / "data.csv"
     sample_csv_data.to_csv(csv_file, index=False)
 
-    schema = get_csv_schema(csv_file)
+    schema = await get_csv_schema(csv_file)
 
     assert schema == ["id", "name", "age", "city"]
 
 
-def test_get_csv_schema_empty_file(temp_dir):
+@pytest.mark.asyncio
+async def test_get_csv_schema_empty_file(temp_dir):
     """Test CSV schema extraction from empty file"""
     csv_file = temp_dir / "empty.csv"
     csv_file.touch()
 
-    schema = get_csv_schema(csv_file)
+    schema = await get_csv_schema(csv_file)
 
     assert schema == []
 
 
-def test_get_csv_schema_missing_file():
+@pytest.mark.asyncio
+async def test_get_csv_schema_missing_file():
     """Test CSV schema extraction with missing file"""
     with pytest.raises(FileNotFoundError):
-        get_csv_schema(Path("/non/existent/file.csv"))
+        await get_csv_schema(Path("/non/existent/file.csv"))
 
 
-def test_get_json_schema_simple(temp_dir, sample_json_data):
+@pytest.mark.asyncio
+async def test_get_json_schema_simple(temp_dir, sample_json_data):
     """Test JSON schema extraction from simple data"""
     json_file = temp_dir / "data.json"
     with open(json_file, "w") as f:
         json.dump(sample_json_data[0], f)
 
-    schema = get_json_schema(json_file)
+    schema = await get_json_schema(json_file)
 
     assert "id" in schema
     assert "product" in schema
@@ -259,13 +275,14 @@ def test_get_json_schema_simple(temp_dir, sample_json_data):
     assert "in_stock" in schema
 
 
-def test_get_json_schema_nested(temp_dir, nested_json_data):
+@pytest.mark.asyncio
+async def test_get_json_schema_nested(temp_dir, nested_json_data):
     """Test JSON schema extraction from nested data"""
     json_file = temp_dir / "nested.json"
     with open(json_file, "w") as f:
         json.dump(nested_json_data, f)
 
-    schema = get_json_schema(json_file, max_depth=3)
+    schema = await get_json_schema(json_file, max_depth=3)
 
     assert "company" in schema
     assert "employees" in schema
@@ -275,13 +292,14 @@ def test_get_json_schema_nested(temp_dir, nested_json_data):
     assert "metadata.created" in schema
 
 
-def test_get_json_schema_max_depth(temp_dir, nested_json_data):
+@pytest.mark.asyncio
+async def test_get_json_schema_max_depth(temp_dir, nested_json_data):
     """Test JSON schema extraction respects max_depth"""
     json_file = temp_dir / "nested.json"
     with open(json_file, "w") as f:
         json.dump(nested_json_data, f)
 
-    schema = get_json_schema(json_file, max_depth=1)
+    schema = await get_json_schema(json_file, max_depth=1)
 
     assert "company" in schema
     assert "employees" in schema
@@ -304,12 +322,13 @@ def test_extract_json_fields_array():
 # =============================================================================
 
 
-def test_get_csv_example_success(temp_dir, sample_csv_data):
+@pytest.mark.asyncio
+async def test_get_csv_example_success(temp_dir, sample_csv_data):
     """Test successful CSV example extraction"""
     csv_file = temp_dir / "data.csv"
     sample_csv_data.to_csv(csv_file, index=False)
 
-    example = get_csv_example(csv_file, row_index=0)
+    example = await get_csv_example(csv_file, row_index=0)
 
     assert example["id"] == 1
     assert example["name"] == "Alice"
@@ -317,61 +336,66 @@ def test_get_csv_example_success(temp_dir, sample_csv_data):
     assert example["city"] == "New York"
 
 
-def test_get_csv_example_with_nan(temp_dir):
+@pytest.mark.asyncio
+async def test_get_csv_example_with_nan(temp_dir):
     """Test CSV example extraction with NaN values"""
     df = pd.DataFrame({"id": [1], "name": ["Test"], "optional": [pd.NA]})
     csv_file = temp_dir / "data.csv"
     df.to_csv(csv_file, index=False)
 
-    example = get_csv_example(csv_file)
+    example = await get_csv_example(csv_file)
 
     assert example["id"] == 1
     assert example["name"] == "Test"
     assert example["optional"] is None
 
 
-def test_get_csv_example_index_out_of_bounds(temp_dir, sample_csv_data):
+@pytest.mark.asyncio
+async def test_get_csv_example_index_out_of_bounds(temp_dir, sample_csv_data):
     """Test CSV example extraction + out of bounds index"""
     csv_file = temp_dir / "data.csv"
     sample_csv_data.to_csv(csv_file, index=False)
 
     with pytest.raises(IndexError):
-        get_csv_example(csv_file, row_index=10)
+        await get_csv_example(csv_file, row_index=10)
 
 
-def test_get_json_example_array(temp_dir, sample_json_data):
+@pytest.mark.asyncio
+async def test_get_json_example_array(temp_dir, sample_json_data):
     """Test JSON example extraction from array"""
     json_file = temp_dir / "data.json"
     with open(json_file, "w") as f:
         json.dump(sample_json_data, f)
 
-    example = get_json_example(json_file, object_index=1)
+    example = await get_json_example(json_file, object_index=1)
 
     assert example["id"] == 2
     assert example["product"] == "Gadget"
     assert example["price"] == 25.50
 
 
-def test_get_json_example_object(temp_dir, nested_json_data):
+@pytest.mark.asyncio
+async def test_get_json_example_object(temp_dir, nested_json_data):
     """Test JSON example extraction from single object"""
     json_file = temp_dir / "data.json"
     with open(json_file, "w") as f:
         json.dump(nested_json_data, f)
 
-    example = get_json_example(json_file)
+    example = await get_json_example(json_file)
 
     assert example["company"] == "Test Corp"
     assert "employees" in example
 
 
-def test_get_json_example_primitive_value(temp_dir):
+@pytest.mark.asyncio
+async def test_get_json_example_primitive_value(temp_dir):
     """Test JSON example extraction from primitive value"""
     json_file = temp_dir / "data.json"
     with open(json_file, "w") as f:
         json.dump("just a string", f)
 
     with pytest.raises(ValueError):
-        get_json_example(json_file)
+        await get_json_example(json_file)
 
 
 # =============================================================================
@@ -504,7 +528,8 @@ def test_logging_output(caplog):
         assert "Converted JSON to" in caplog.text
 
 
-def test_unicode_handling(temp_dir):
+@pytest.mark.asyncio
+async def test_unicode_handling(temp_dir):
     """Test handling of Unicode characters"""
     data = {"name": "José", "city": "São Paulo", "emoji": "😊"}
     json_file = temp_dir / "unicode.json"
@@ -512,14 +537,15 @@ def test_unicode_handling(temp_dir):
     with open(json_file, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
 
-    example = get_json_example(json_file)
+    example = await get_json_example(json_file)
 
     assert example["name"] == "José"
     assert example["city"] == "São Paulo"
     assert example["emoji"] == "😊"
 
 
-def test_large_csv_performance(temp_dir):
+@pytest.mark.asyncio
+async def test_large_csv_performance(temp_dir):
     """Test performance with larger CSV files"""
     # Create a CSV with 1000 rows
     large_df = pd.DataFrame(
@@ -529,22 +555,25 @@ def test_large_csv_performance(temp_dir):
     large_df.to_csv(csv_file, index=False)
 
     # Should only read the first row
-    example = get_csv_example(csv_file)
+    example = await get_csv_example(csv_file)
 
     assert example["id"] == 0
     assert example["value"] == "value_0"
 
 
-def test_concurrent_file_access(temp_dir, sample_csv_data):
+@pytest.mark.asyncio
+async def test_concurrent_file_access(temp_dir, sample_csv_data):
     """Test handling of concurrent file access"""
     csv_file = temp_dir / "data.csv"
     sample_csv_data.to_csv(csv_file, index=False)
 
-    # Simulate multiple reads
-    results = []
+    # Simulate multiple concurrent reads
+    tasks = []
     for i in range(3):
-        example = get_csv_example(csv_file, row_index=i)
-        results.append(example)
+        task = get_csv_example(csv_file, row_index=i)
+        tasks.append(task)
+
+    results = await asyncio.gather(*tasks)
 
     assert len(results) == 3
     assert results[0]["name"] == "Alice"

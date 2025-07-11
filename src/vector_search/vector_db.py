@@ -63,7 +63,7 @@ class VectorDB:
 
         # Initialize embedder
         self.embedder = LocalJinaEmbedder(
-            model_name="jinaai/jina-embeddings-v3", dimensions=EMBEDDING_DIM
+            model_name="jinaai/jina-embeddings-v4", dimensions=EMBEDDING_DIM
         )
 
         # Setup collection

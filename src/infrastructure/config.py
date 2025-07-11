@@ -3,7 +3,7 @@ import os
 # Get all the env variables & optional validation
 
 ENV = os.getenv("ENV", "development")
-
+IS_DOCKER = os.getenv("IS_DOCKER", "false") == "true"
 USE_GRPC = os.getenv("USE_GRPC", "true").lower() == "true"
 
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")

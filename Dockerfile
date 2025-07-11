@@ -26,6 +26,8 @@ FROM python:3.12-slim AS runtime
 # Install only runtime dependencies
 RUN apt-get update && apt-get install -y \
     curl \
+    libjpeg-dev zlib1g-dev libpng-dev \
+    libavcodec-dev libavformat-dev libswscale-dev \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -44,7 +46,7 @@ COPY src/ ./src/
 COPY src/main.py ./
 
 # Create necessary directories and set permissions
-RUN mkdir -p /app/cache /app/logs /app/models /app/qdrant_data && \
+RUN mkdir -p /app/cache /app/qdrant_data && \
     chown -R appuser:appuser /app
 
 # Switch to non-root user

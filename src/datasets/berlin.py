@@ -22,7 +22,7 @@ from src.utils.datasets_utils import (
     skip_formats,
 )
 from src.utils.embeddings_utils import extract_data_content
-from src.vector_search.vector_db import VectorDB
+from src.vector_search.vector_db import create_vector_db, VectorDB
 from src.vector_search.vector_db_buffer import VectorDBBuffer
 
 if TYPE_CHECKING:
@@ -98,11 +98,9 @@ class BerlinOpenDataDownloader:
         self.browser_lock = asyncio.Lock()
 
         self.is_embeddings = is_embeddings
-        if self.is_embeddings:
-            vector_db = VectorDB(use_grpc=True)
-            self.index_buffer = VectorDBBuffer(
-                vector_db, buffer_size=100, auto_flush=True
-            )
+        # Async VectorDB will be initialized in __aenter__
+        self.vector_db: VectorDB | None = None
+        self.vector_db_buffer: VectorDBBuffer | None = None
 
     async def __aenter__(self):
         """Async context manager entry with optimized session"""
@@ -129,12 +127,37 @@ class BerlinOpenDataDownloader:
                 "Accept-Encoding": "gzip, deflate",  # Enable compression
             },
         )
+
+        # Initialize async VectorDB if embeddings are enabled
+        if self.is_embeddings:
+            self.vector_db = await create_vector_db(use_grpc=True)
+            self.vector_db_buffer = VectorDBBuffer(
+                self.vector_db, buffer_size=100, auto_flush=True
+            )
+
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit"""
+        # Flush embeddings buffer if it exists
+        if self.vector_db_buffer:
+            try:
+                await self.vector_db_buffer.flush()
+            except Exception as e:
+                logger.error(f"Error flushing index buffer: {e}")
+
+        # Close VectorDB connection
+        if self.vector_db:
+            try:
+                await self.vector_db.qdrant.close()
+            except Exception as e:
+                logger.error(f"Error closing VectorDB: {e}")
+
+        # Close HTTP session
         if self.session:
             await self.session.close()
+
+        # Close browser
         if self.browser:
             await self.browser.close()
 
@@ -458,10 +481,11 @@ class BerlinOpenDataDownloader:
                         )
                     )
 
-                if self.is_embeddings:
+                if self.is_embeddings and self.vector_db_buffer:
+                    # Extract content asynchronously
                     package_meta.content = await extract_data_content(dataset_dir)
                     async with self.index_lock:
-                        self.index_buffer.add(package_meta)
+                        await self.vector_db_buffer.add(package_meta)
             else:
                 # Clean up empty dataset
                 safe_delete(dataset_dir, logger)
@@ -624,8 +648,9 @@ class BerlinOpenDataDownloader:
         except asyncio.CancelledError:
             pass
 
-        if self.is_embeddings:
-            self.index_buffer.flush()
+        # Final flush of embeddings buffer
+        if self.vector_db_buffer:
+            await self.vector_db_buffer.flush()
 
         # Final statistics
         end_time = datetime.now()

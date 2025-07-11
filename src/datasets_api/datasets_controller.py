@@ -26,8 +26,8 @@ async def search_datasets(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/bootstrap_datasets")
-async def bootstrap_datasets(
+@router.post("/bootstrap")
+async def bootstrap(
     service: DatasetService = Depends(get_dataset_service),
 ):
     try:

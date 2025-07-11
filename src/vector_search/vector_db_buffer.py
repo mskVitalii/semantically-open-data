@@ -1,6 +1,6 @@
+import asyncio
 from typing import List
 import logging
-from threading import Lock
 
 from src.datasets.datasets_metadata import DatasetMetadataWithContent
 from src.vector_search.vector_db import VectorDB
@@ -18,7 +18,7 @@ class VectorDBBuffer:
         Initialize the buffer
 
         Args:
-            vector_db: The VectorDB instance to use for indexing
+            vector_db: The AsyncVectorDB instance to use for indexing
             buffer_size: Maximum number of records to hold before auto-flushing
             auto_flush: Whether to automatically flush when buffer is full
         """
@@ -26,50 +26,50 @@ class VectorDBBuffer:
         self.buffer_size = buffer_size
         self.auto_flush = auto_flush
         self._buffer: list[DatasetMetadataWithContent] = []
-        self._lock = Lock()  # Thread safety for buffer operations
+        self._lock = asyncio.Lock()  # Async lock for thread safety
         self._total_indexed = 0
 
-    def add(self, dataset: DatasetMetadataWithContent) -> None:
+    async def add(self, dataset: DatasetMetadataWithContent) -> None:
         """
         Add a single dataset to the buffer
 
         Args:
             dataset: Dataset to add to the buffer
         """
-        with self._lock:
+        async with self._lock:
             self._buffer.append(dataset)
             logger.debug(f"Added dataset to buffer. Current size: {len(self._buffer)}")
 
             if self.auto_flush and len(self._buffer) >= self.buffer_size:
-                self._flush_internal()
+                await self._flush_internal()
 
-    def add_batch(self, datasets: List[DatasetMetadataWithContent]) -> None:
+    async def add_batch(self, datasets: List[DatasetMetadataWithContent]) -> None:
         """
         Add multiple datasets to the buffer
 
         Args:
             datasets: List of datasets to add
         """
-        with self._lock:
+        async with self._lock:
             self._buffer.extend(datasets)
             logger.debug(
                 f"Added {len(datasets)} datasets to buffer. Current size: {len(self._buffer)}"
             )
 
             if self.auto_flush and len(self._buffer) >= self.buffer_size:
-                self._flush_internal()
+                await self._flush_internal()
 
-    def flush(self) -> int:
+    async def flush(self) -> int:
         """
         Manually flush the buffer
 
         Returns:
             Number of datasets indexed
         """
-        with self._lock:
-            return self._flush_internal()
+        async with self._lock:
+            return await self._flush_internal()
 
-    def _flush_internal(self) -> int:
+    async def _flush_internal(self) -> int:
         """
         Internal flush method (must be called with lock held)
 
@@ -86,7 +86,7 @@ class VectorDBBuffer:
         try:
             # Index the datasets
             logger.info(f"Flushing {len(datasets_to_index)} datasets from buffer")
-            self.vector_db.index_datasets(
+            await self.vector_db.index_datasets(
                 datasets_to_index, batch_size=self.buffer_size
             )
 
@@ -104,23 +104,23 @@ class VectorDBBuffer:
             # Buffer is not cleared on error, so data is not lost
             raise
 
-    def __enter__(self):
-        """Context manager entry"""
+    async def __aenter__(self):
+        """Async context manager entry"""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - always flush remaining data"""
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit - always flush remaining data"""
         try:
-            self.flush()
+            await self.flush()
         except Exception as e:
             logger.error(f"Error flushing buffer on exit: {e}")
             if exc_type is None:  # Only raise if there wasn't already an exception
                 raise
 
     @property
-    def size(self) -> int:
+    async def size(self) -> int:
         """Current number of items in the buffer"""
-        with self._lock:
+        async with self._lock:
             return len(self._buffer)
 
     @property
@@ -128,51 +128,100 @@ class VectorDBBuffer:
         """Total number of datasets indexed through this buffer"""
         return self._total_indexed
 
-    def clear(self) -> None:
+    async def clear(self) -> None:
         """Clear the buffer without indexing"""
-        with self._lock:
+        async with self._lock:
             count = len(self._buffer)
             self._buffer.clear()
             logger.info(f"Cleared {count} datasets from buffer without indexing")
 
 
-# Example:
-if __name__ == "__main__":
-    # Initialize VectorDB
-    vector_db_main = VectorDB(use_grpc=True)
+# Example usage:
+async def main():
+    # Initialize AsyncVectorDB
+    from src.vector_search.vector_db import create_vector_db
 
-    # Create buffer with auto-flush at 100 records
-    buffer = VectorDBBuffer(vector_db_main, buffer_size=100, auto_flush=True)
+    vector_db_main = await create_vector_db(use_grpc=True)
 
-    # Example 1: Add datasets one by one
-    for i in range(250):
-        dataset_main = DatasetMetadataWithContent(
-            id=f"dataset_{i}",
-            title=f"Dataset {i}",
-            description=f"Description for dataset {i}",
-            content=f"Content for dataset {i}",
-            city="Chemnitz",
-            state="Saxony",
-            country="Germany",
-        )
-        buffer.add(dataset_main)  # Will auto-flush at 100 and 200
+    try:
+        # Create buffer with auto-flush at 100 records
+        buffer = VectorDBBuffer(vector_db_main, buffer_size=100, auto_flush=True)
 
-    # Flush remaining datasets
-    buffer.flush()  # Will flush the remaining 50
-
-    # Example 2: Using context manager
-    with VectorDBBuffer(vector_db_main, buffer_size=50) as buffer:
-        datasets_main = [
-            DatasetMetadataWithContent(
-                id=f"batch_{i}",
-                title=f"Batch Dataset {i}",
-                description=f"Batch description {i}",
-                content=f"Batch content {i}",
+        # Example 1: Add datasets one by one
+        for i in range(250):
+            dataset_main = DatasetMetadataWithContent(
+                id=f"dataset_{i}",
+                title=f"Dataset {i}",
+                description=f"Description for dataset {i}",
+                content=f"Content for dataset {i}",
                 city="Chemnitz",
+                state="Saxony",
+                country="Germany",
             )
-            for i in range(30)
-        ]
-        buffer.add_batch(datasets_main)
-        # Buffer will be automatically flushed when exiting the context
+            await buffer.add(dataset_main)  # Will auto-flush at 100 and 200
 
-    print(f"Total datasets indexed: {buffer.total_indexed}")
+        # Flush remaining datasets
+        await buffer.flush()  # Will flush the remaining 50
+
+        # Example 2: Using async context manager
+        async with VectorDBBuffer(vector_db_main, buffer_size=50) as buffer2:
+            datasets_main = [
+                DatasetMetadataWithContent(
+                    id=f"batch_{i}",
+                    title=f"Batch Dataset {i}",
+                    description=f"Batch description {i}",
+                    content=f"Batch content {i}",
+                    city="Chemnitz",
+                )
+                for i in range(30)
+            ]
+            await buffer2.add_batch(datasets_main)
+            # Buffer will be automatically flushed when exiting the context
+
+        print(f"Total datasets indexed: {buffer.total_indexed}")
+
+    finally:
+        # Clean up
+        await vector_db_main.qdrant.close()
+
+
+# Example 3: Concurrent operations
+async def concurrent_example():
+    from src.vector_search.vector_db import create_vector_db
+
+    vector_db = await create_vector_db(use_grpc=True)
+
+    try:
+        async with VectorDBBuffer(vector_db, buffer_size=100) as buffer:
+            # Create multiple tasks that add data concurrently
+            async def add_datasets(start_idx: int, count: int):
+                for i in range(start_idx, start_idx + count):
+                    dataset = DatasetMetadataWithContent(
+                        id=f"concurrent_{i}",
+                        title=f"Concurrent Dataset {i}",
+                        description=f"Description {i}",
+                        content=f"Content {i}",
+                        city="Dresden",
+                    )
+                    await buffer.add(dataset)
+
+            # Run multiple concurrent tasks
+            tasks = [
+                add_datasets(0, 50),
+                add_datasets(50, 50),
+                add_datasets(100, 50),
+            ]
+            await asyncio.gather(*tasks)
+
+        print(f"Concurrently indexed: {buffer.total_indexed} datasets")
+
+    finally:
+        await vector_db.qdrant.close()
+
+
+if __name__ == "__main__":
+    # Run the async main function
+    asyncio.run(main())
+
+    # Or run the concurrent example
+    # asyncio.run(concurrent_example())

@@ -19,7 +19,7 @@ from src.datasets.datasets_metadata import (
 from src.utils.datasets_utils import sanitize_filename, safe_delete
 from src.infrastructure.logger import get_logger
 from src.utils.embeddings_utils import extract_data_content
-from src.vector_search.vector_db import VectorDB
+from src.vector_search.vector_db import VectorDB, create_vector_db
 from src.vector_search.vector_db_buffer import VectorDBBuffer
 
 logger = get_logger(__name__)
@@ -95,11 +95,9 @@ class LeipzigCSVJSONDownloader:
         self.failed_urls_lock = asyncio.Lock()
 
         self.is_embeddings = is_embeddings
-        if self.is_embeddings:
-            vector_db = VectorDB(use_grpc=True)
-            self.index_buffer = VectorDBBuffer(
-                vector_db, buffer_size=100, auto_flush=True
-            )
+        # Async VectorDB will be initialized in __aenter__
+        self.vector_db: VectorDB | None = None
+        self.vector_db_buffer: VectorDBBuffer | None = None
 
     async def __aenter__(self):
         """Async context manager entry with optimized session"""
@@ -128,12 +126,32 @@ class LeipzigCSVJSONDownloader:
                 "Accept-Encoding": "gzip, deflate",  # Enable compression
             },
         )
+        # Initialize async VectorDB if embeddings are enabled
+        if self.is_embeddings:
+            self.vector_db = await create_vector_db(use_grpc=True)
+            self.vector_db_buffer = VectorDBBuffer(
+                self.vector_db, buffer_size=100, auto_flush=True
+            )
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit"""
         if self.session:
             await self.session.close()
+
+        # Flush embeddings buffer if it exists
+        if self.vector_db_buffer:
+            try:
+                await self.vector_db_buffer.flush()
+            except Exception as e:
+                logger.error(f"Error flushing index buffer: {e}")
+
+        # Close VectorDB connection
+        if self.vector_db:
+            try:
+                await self.vector_db.qdrant.close()
+            except Exception as e:
+                logger.error(f"Error closing VectorDB: {e}")
 
     async def update_stats(self, field: str, increment: int = 1):
         """Thread-safe statistics update"""
@@ -471,7 +489,7 @@ class LeipzigCSVJSONDownloader:
                 if self.is_embeddings:
                     package_meta.content = await extract_data_content(dataset_dir)
                     async with self.index_lock:
-                        self.index_buffer.add(package_meta)
+                        await self.vector_db_buffer.add(package_meta)
             else:
                 # Clean up empty dataset
                 safe_delete(dataset_dir, logger)
@@ -574,7 +592,7 @@ Filter: CSV and JSON formats only
             await self.print_progress(processed, len(target_packages))
 
         if self.is_embeddings:
-            self.index_buffer.flush()
+            await self.vector_db_buffer.flush()
 
         # Final report
         logger.info("\n" + "=" * 50)

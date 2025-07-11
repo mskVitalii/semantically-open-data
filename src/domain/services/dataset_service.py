@@ -1,3 +1,6 @@
+from fastapi import Depends
+
+from dependencies import get_vector_db
 from ...datasets.bootstrap import bootstrap_data
 from ...datasets.datasets_metadata import DatasetMetadataWithContent
 from ...datasets_api.datasets_dto import (
@@ -5,7 +8,6 @@ from ...datasets_api.datasets_dto import (
     DatasetSearchResponse,
     DatasetResponse,
 )
-from ...infrastructure.config import USE_GRPC
 from ...infrastructure.logger import get_logger
 from ...vector_search.vector_db import VectorDB
 
@@ -16,7 +18,8 @@ logger = get_logger(__name__)
 class DatasetService:
     """Service for working with datasets"""
 
-    vector_db = VectorDB(USE_GRPC)
+    def __init__(self, vector_db: VectorDB):
+        self.vector_db = vector_db
 
     async def search_datasets(
         self, request: DatasetSearchRequest
@@ -31,7 +34,7 @@ class DatasetService:
         # )
 
         # TODO: extend request
-        datasets = self.vector_db.search(request.query, None)
+        datasets = await self.vector_db.search(request.query, None)
 
         metadatas: list[DatasetResponse] = []
         for dataset in datasets:
@@ -69,5 +72,7 @@ class DatasetService:
         return True
 
 
-def get_dataset_service() -> DatasetService:
-    return DatasetService()
+async def get_dataset_service(
+    vector_db: VectorDB = Depends(get_vector_db),
+) -> DatasetService:
+    return DatasetService(vector_db)

@@ -25,7 +25,7 @@ from src.vector_search.vector_db_buffer import VectorDBBuffer
 if TYPE_CHECKING:
     from _typeshed import SupportsWrite  # noqa: F401
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, "CHEMNITZ")
 
 
 class ChemnitzDataDownloader:
@@ -380,7 +380,7 @@ class ChemnitzDataDownloader:
             )
 
             if success_count > 0:
-                logger.info(
+                logger.debug(
                     f"\tDownloaded {success_count}/{len(all_features)} layers for: {title}"
                 )
 
@@ -429,7 +429,7 @@ class ChemnitzDataDownloader:
             if "Feature Service" == dataset_type:
                 return await self.download_feature_service_data(url, title, description)
             else:
-                logger.warning(f"\t⚠ Unknown type {dataset_type} for {title}")
+                logger.debug(f"\t⚠ Unknown type {dataset_type} for {title}")
                 return False
 
         except Exception as e:
@@ -456,7 +456,7 @@ class ChemnitzDataDownloader:
                 rate = processed / elapsed if elapsed > 0 else 0
                 eta = (total - processed) / rate if rate > 0 else 0
 
-                logger.info(
+                logger.debug(
                     f"Progress: {processed}/{total} ({percentage:.1f}%) - "
                     f"Files: {files} - Layers: {layers} - Errors: {errors} - "
                     f"Cache hits: {cache_hits} - Retries: {retries} - "
@@ -531,22 +531,22 @@ class ChemnitzDataDownloader:
         duration = end_time - self.stats["start_time"]
 
         logger.debug("-" * 50)
-        logger.info("=" * 60)
-        logger.info("DOWNLOAD STATISTICS")
-        logger.info("=" * 60)
-        logger.info(f"Datasets found: {self.stats['datasets_found']}")
-        logger.info(f"Datasets processed: {self.stats['datasets_processed']}")
-        logger.info(f"Files downloaded: {self.stats['files_downloaded']}")
-        logger.info(f"Layers downloaded: {self.stats['layers_downloaded']}")
-        logger.info(f"Errors: {self.stats['errors']}")
-        logger.info(f"Failed datasets: {len(self.stats['failed_datasets'])}")
-        logger.info(f"Cache hits: {self.stats['cache_hits']}")
-        logger.info(f"Retries: {self.stats['retries']}")
-        logger.info(f"Execution time: {duration}")
-        logger.info(
+        logger.debug("=" * 60)
+        logger.debug("DOWNLOAD STATISTICS")
+        logger.debug("=" * 60)
+        logger.debug(f"Datasets found: {self.stats['datasets_found']}")
+        logger.debug(f"Datasets processed: {self.stats['datasets_processed']}")
+        logger.debug(f"Files downloaded: {self.stats['files_downloaded']}")
+        logger.debug(f"Layers downloaded: {self.stats['layers_downloaded']}")
+        logger.debug(f"Errors: {self.stats['errors']}")
+        logger.debug(f"Failed datasets: {len(self.stats['failed_datasets'])}")
+        logger.debug(f"Cache hits: {self.stats['cache_hits']}")
+        logger.debug(f"Retries: {self.stats['retries']}")
+        logger.debug(f"Execution time: {duration}")
+        logger.debug(
             f"Average time per dataset: {duration / max(1, self.stats['datasets_processed'])}"
         )
-        logger.info(f"Data saved to: {self.output_dir.absolute()}")
+        logger.debug(f"Data saved to: {self.output_dir.absolute()}")
 
 
 async def async_main():

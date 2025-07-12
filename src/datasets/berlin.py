@@ -28,7 +28,7 @@ from src.vector_search.vector_db_buffer import VectorDBBuffer
 if TYPE_CHECKING:
     from _typeshed import SupportsWrite  # noqa: F401
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, "BERLIN")
 
 
 class BerlinOpenDataDownloader:
@@ -180,7 +180,7 @@ class BerlinOpenDataDownloader:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                logger.info("Fetching list of all datasets...")
+                logger.debug("Fetching list of all datasets...")
                 async with self.session.get(f"{self.api_url}/package_list") as response:
                     response.raise_for_status()
                     data = await response.json()
@@ -265,7 +265,7 @@ class BerlinOpenDataDownloader:
                     # Read first chunk to check if it's actually HTML
                     first_chunk = await response.content.read(1024)
                     if b"<!DOCTYPE" in first_chunk or b"<html" in first_chunk:
-                        logger.info(f"HTML content detected, trying Playwright: {url}")
+                        logger.debug(f"HTML content detected, trying Playwright: {url}")
                         async with self.playwright_lock:
                             self.playwright_domains.add(domain)
                         return await self.download_file_playwright(url, filepath)
@@ -449,7 +449,7 @@ class BerlinOpenDataDownloader:
                 success_count = sum(1 for r in results if r is True)
 
             if success_count > 0:
-                logger.info(f"Downloaded {success_count} files for: {title}")
+                logger.debug(f"Downloaded {success_count} files for: {title}")
 
                 # Save metadata
                 package_meta = DatasetMetadataWithContent(
@@ -594,7 +594,7 @@ class BerlinOpenDataDownloader:
             logger.error("No packages found or error fetching package list")
             return
 
-        logger.info(
+        logger.debug(
             f"Starting download of {len(packages)} datasets with {self.max_workers} workers"
         )
 
@@ -630,7 +630,7 @@ class BerlinOpenDataDownloader:
                     logger.error(f"Exception in task for {package}: {result}")
                     await self.update_stats("errors")
 
-            logger.info(
+            logger.debug(
                 f"Completed batch {i // self.batch_size + 1}/{(len(packages) + self.batch_size - 1) // self.batch_size}"
             )
 
@@ -645,25 +645,27 @@ class BerlinOpenDataDownloader:
         if self.vector_db_buffer:
             await self.vector_db_buffer.flush()
 
+        logger.info("🎉 Download completed!")
+
         # Final statistics
         end_time = datetime.now()
         duration = end_time - self.stats["start_time"]
 
-        logger.info("=" * 60)
-        logger.info("DOWNLOAD STATISTICS")
-        logger.info("=" * 60)
-        logger.info(f"Datasets found: {self.stats['datasets_found']}")
-        logger.info(f"Datasets processed: {self.stats['datasets_processed']}")
-        logger.info(f"Files downloaded: {self.stats['files_downloaded']}")
-        logger.info(f"Errors: {self.stats['errors']}")
-        logger.info(f"Failed datasets: {len(self.stats['failed_datasets'])}")
-        logger.info(f"Cache hits: {self.stats['cache_hits']}")
-        logger.info(f"Playwright downloads: {self.stats['playwright_downloads']}")
-        logger.info(f"Execution time: {duration}")
-        logger.info(
+        logger.debug("=" * 60)
+        logger.debug("DOWNLOAD STATISTICS")
+        logger.debug("=" * 60)
+        logger.debug(f"Datasets found: {self.stats['datasets_found']}")
+        logger.debug(f"Datasets processed: {self.stats['datasets_processed']}")
+        logger.debug(f"Files downloaded: {self.stats['files_downloaded']}")
+        logger.debug(f"Errors: {self.stats['errors']}")
+        logger.debug(f"Failed datasets: {len(self.stats['failed_datasets'])}")
+        logger.debug(f"Cache hits: {self.stats['cache_hits']}")
+        logger.debug(f"Playwright downloads: {self.stats['playwright_downloads']}")
+        logger.debug(f"Execution time: {duration}")
+        logger.debug(
             f"Average time per dataset: {duration / max(1, self.stats['datasets_processed'])}"
         )
-        logger.info(f"Data saved to: {self.output_dir.absolute()}")
+        logger.debug(f"Data saved to: {self.output_dir.absolute()}")
 
 
 async def main():

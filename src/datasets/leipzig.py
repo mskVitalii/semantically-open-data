@@ -22,7 +22,7 @@ from src.utils.embeddings_utils import extract_data_content
 from src.vector_search.vector_db import VectorDB, get_vector_db
 from src.vector_search.vector_db_buffer import VectorDBBuffer
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, "LEIPZIG")
 
 
 class LeipzigCSVJSONDownloader:
@@ -249,7 +249,7 @@ class LeipzigCSVJSONDownloader:
             if not all_packages:
                 return []
 
-            logger.info("🔎 Analyzing packages for CSV/JSON/GeoJSON resources...")
+            logger.debug("🔎 Analyzing packages for CSV/JSON/GeoJSON resources...")
 
             # Process packages in batches
             target_packages = []
@@ -275,7 +275,7 @@ class LeipzigCSVJSONDownloader:
 
                 # Progress update
                 checked = min(i + self.batch_size, len(all_packages))
-                logger.info(f"\tChecked {checked}/{len(all_packages)} packages...")
+                logger.debug(f"\tChecked {checked}/{len(all_packages)} packages...")
 
             logger.info(
                 f"✅ Found {len(target_packages)} packages with CSV/JSON/GeoJSON"
@@ -502,7 +502,7 @@ class LeipzigCSVJSONDownloader:
             rate = current / elapsed if elapsed > 0 else 0
             eta = (total - current) / rate if rate > 0 else 0
 
-            logger.info(
+            logger.debug(
                 f"Progress: {current}/{total} ({percentage:.1f}%) - "
                 f"Downloads: {self.stats['successful_downloads']} - "
                 f"Errors: {self.stats['failed_downloads']} - "
@@ -542,13 +542,13 @@ Filter: CSV and JSON formats only
 - Data files (CSV/JSON/GeoJSON)
 - metadata.json - dataset metadata
 """
-        logger.info(text_report)
+        logger.debug(text_report)
 
     async def download_csv_json_only(self, limit: Optional[int] = None):
         """Main download method"""
         logger.info("🎯 Leipzig CSV & JSON Data Downloader (Async)")
-        logger.info(f"📁 Output directory: {self.output_dir.absolute()}")
-        logger.info("=" * 50)
+        logger.debug(f"📁 Output directory: {self.output_dir.absolute()}")
+        logger.debug("=" * 50)
 
         # Get target packages
         target_packages = await self.get_packages_with_target_formats()
@@ -560,10 +560,10 @@ Filter: CSV and JSON formats only
         # Apply limit for testing
         if limit:
             target_packages = target_packages[:limit]
-            logger.info(f"⚠️  Testing mode: processing only {limit} packages")
+            logger.debug(f"⚠️  Testing mode: processing only {limit} packages")
 
-        logger.info(f"\n🚀 Starting download of {len(target_packages)} packages...")
-        logger.info("-" * 50)
+        logger.debug(f"\n🚀 Starting download of {len(target_packages)} packages...")
+        logger.debug("-" * 50)
 
         # Process packages in batches
         for i in range(0, len(target_packages), self.batch_size):
@@ -588,7 +588,7 @@ Filter: CSV and JSON formats only
             await self.vector_db_buffer.flush()
 
         # Final report
-        logger.info("\n" + "=" * 50)
+        logger.debug("\n" + "=" * 50)
         logger.info("🎉 Download completed!")
         await self.create_summary_report()
 

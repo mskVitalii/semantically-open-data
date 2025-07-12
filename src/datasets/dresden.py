@@ -20,7 +20,7 @@ from src.utils.embeddings_utils import extract_data_content
 from src.vector_search.vector_db import VectorDB, get_vector_db
 from src.vector_search.vector_db_buffer import VectorDBBuffer
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, "DRESDEN")
 
 
 class DresdenOpenDataDownloader:
@@ -167,7 +167,7 @@ class DresdenOpenDataDownloader:
 
         for attempt in range(self.max_retries):
             try:
-                logger.info(f"Searching datasets: offset={offset}, limit={limit}")
+                logger.debug(f"Searching datasets: offset={offset}, limit={limit}")
                 async with self.session.get(
                     self.search_endpoint, params=params
                 ) as response:
@@ -280,7 +280,7 @@ class DresdenOpenDataDownloader:
             logger.debug("No direct content files found, trying distribution metadata")
             downloads = self.extract_from_distributions(dataset_metadata)
 
-        logger.info(f"Found {len(downloads)} files for download")
+        logger.debug(f"Found {len(downloads)} files for download")
         return downloads
 
     async def _check_url_availability(
@@ -461,7 +461,7 @@ class DresdenOpenDataDownloader:
                     # Atomic rename
                     temp_path.rename(filepath)
 
-                    logger.info(
+                    logger.debug(
                         f"File saved: {filepath} ({filepath.stat().st_size} bytes)"
                     )
                     await self.update_stats("files_downloaded")
@@ -573,7 +573,7 @@ class DresdenOpenDataDownloader:
             country="Germany",
         )
 
-        logger.info(f"Processing dataset: {title}")
+        logger.debug(f"Processing dataset: {title}")
         logger.debug(f"Dataset URI: {dataset_uri}")
 
         # Extract download links
@@ -667,18 +667,18 @@ class DresdenOpenDataDownloader:
             total_results = search_result.get("results", 0)
 
             if not children:
-                logger.info("No more datasets found")
+                logger.debug("No more datasets found")
                 break
 
             if offset == 0:
                 self.stats["datasets_found"] = total_results
-                logger.info(f"Total datasets found: {total_results}")
+                logger.debug(f"Total datasets found: {total_results}")
 
             all_datasets.extend(children)
 
             # Move to next page
             offset += limit
-            logger.info(f"Collected datasets: {len(all_datasets)} of {total_results}")
+            logger.debug(f"Collected datasets: {len(all_datasets)} of {total_results}")
 
             # If we got fewer results than requested, this is the last page
             if len(children) < limit:
@@ -720,7 +720,7 @@ class DresdenOpenDataDownloader:
             logger.error("No datasets found")
             return
 
-        logger.info(
+        logger.debug(
             f"Starting download of {len(all_datasets)} datasets with {self.max_workers} workers"
         )
 
@@ -755,7 +755,7 @@ class DresdenOpenDataDownloader:
             tasks = [process_with_semaphore(dataset) for dataset in batch]
             await asyncio.gather(*tasks, return_exceptions=True)
 
-            logger.info(
+            logger.debug(
                 f"Completed batch {i // self.batch_size + 1}/"
                 f"{(len(all_datasets) + self.batch_size - 1) // self.batch_size}"
             )
@@ -770,25 +770,27 @@ class DresdenOpenDataDownloader:
         if self.is_embeddings:
             await self.vector_db_buffer.flush()
 
+        logger.info("🎉 Download completed!")
+
         # Final statistics
         end_time = datetime.now()
         duration = end_time - self.stats["start_time"]
 
-        logger.info("=" * 60)
-        logger.info("DOWNLOAD STATISTICS")
-        logger.info("=" * 60)
-        logger.info(f"Datasets found: {self.stats['datasets_found']}")
-        logger.info(f"Datasets processed: {self.stats['datasets_processed']}")
-        logger.info(f"Files downloaded: {self.stats['files_downloaded']}")
-        logger.info(f"Errors: {self.stats['errors']}")
-        logger.info(f"Failed datasets: {len(self.stats['failed_datasets'])}")
-        logger.info(f"Cache hits: {self.stats['cache_hits']}")
-        logger.info(f"Retries: {self.stats['retries']}")
-        logger.info(f"Execution time: {duration}")
-        logger.info(
+        logger.debug("=" * 60)
+        logger.debug("DOWNLOAD STATISTICS")
+        logger.debug("=" * 60)
+        logger.debug(f"Datasets found: {self.stats['datasets_found']}")
+        logger.debug(f"Datasets processed: {self.stats['datasets_processed']}")
+        logger.debug(f"Files downloaded: {self.stats['files_downloaded']}")
+        logger.debug(f"Errors: {self.stats['errors']}")
+        logger.debug(f"Failed datasets: {len(self.stats['failed_datasets'])}")
+        logger.debug(f"Cache hits: {self.stats['cache_hits']}")
+        logger.debug(f"Retries: {self.stats['retries']}")
+        logger.debug(f"Execution time: {duration}")
+        logger.debug(
             f"Average time per dataset: {duration / max(1, self.stats['datasets_processed'])}"
         )
-        logger.info(f"Data saved to: {self.output_dir.absolute()}")
+        logger.debug(f"Data saved to: {self.output_dir.absolute()}")
 
 
 async def async_main():

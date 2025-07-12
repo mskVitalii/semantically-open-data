@@ -22,7 +22,7 @@ from src.utils.embeddings_utils import extract_data_content
 from src.vector_search.vector_db import VectorDB, get_vector_db
 from src.vector_search.vector_db_buffer import VectorDBBuffer
 
-logger = get_logger(__name__, "LEIPZIG")
+logger = get_logger(__name__)
 
 
 class LeipzigCSVJSONDownloader:
@@ -165,7 +165,7 @@ class LeipzigCSVJSONDownloader:
                         return []
 
                     packages = data["result"]
-                    logger.info(f"📊 Total packages found: {len(packages)}")
+                    logger.info(f"[LEIPZIG] 📊 Total packages found: {len(packages)}")
                     return packages
 
             except Exception as e:
@@ -278,11 +278,11 @@ class LeipzigCSVJSONDownloader:
                 logger.debug(f"\tChecked {checked}/{len(all_packages)} packages...")
 
             logger.info(
-                f"✅ Found {len(target_packages)} packages with CSV/JSON/GeoJSON"
+                f"[LEIPZIG] ✅ Found {len(target_packages)} packages with CSV/JSON/GeoJSON"
             )
             async with self.stats_lock:
                 logger.info(
-                    f"📋 Total target resources: {self.stats['total_target_resources']}"
+                    f"[LEIPZIG] 📋 Total target resources: {self.stats['total_target_resources']}"
                 )
 
             return target_packages
@@ -546,7 +546,7 @@ Filter: CSV and JSON formats only
 
     async def download_csv_json_only(self, limit: Optional[int] = None):
         """Main download method"""
-        logger.info("🎯 Leipzig CSV & JSON Data Downloader (Async)")
+        logger.info("[LEIPZIG] Start Leipzig CSV & JSON Data Downloader")
         logger.debug(f"📁 Output directory: {self.output_dir.absolute()}")
         logger.debug("=" * 50)
 
@@ -589,7 +589,7 @@ Filter: CSV and JSON formats only
 
         # Final report
         logger.debug("\n" + "=" * 50)
-        logger.info("🎉 Download completed!")
+        logger.info("[LEIPZIG] 🎉 Download completed!")
         await self.create_summary_report()
 
 

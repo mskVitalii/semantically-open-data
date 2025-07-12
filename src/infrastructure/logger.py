@@ -7,7 +7,7 @@ from src.infrastructure.config import ENV
 from src.infrastructure.paths import PROJECT_ROOT
 
 
-def get_logger(name: str, prefix: str | None = None) -> Logger:
+def get_logger(name: str) -> Logger:
     log_handlers = [logging.StreamHandler(sys.stdout)]
 
     if ENV != "production":
@@ -16,7 +16,7 @@ def get_logger(name: str, prefix: str | None = None) -> Logger:
 
     logging.basicConfig(
         level=logging.INFO,
-        format=f"%(asctime)s - %(levelname)s - {'' if name is None else f'[{name}] - '}{'' if prefix is None else f'[{prefix}] - '}%(message)s",
+        format="%(asctime)s - %(levelname)s - %(message)s",
         handlers=log_handlers,
     )
     logger = logging.getLogger(name)

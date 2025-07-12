@@ -25,7 +25,7 @@ from src.vector_search.vector_db_buffer import VectorDBBuffer
 if TYPE_CHECKING:
     from _typeshed import SupportsWrite  # noqa: F401
 
-logger = get_logger(__name__, "CHEMNITZ")
+logger = get_logger(__name__)
 
 
 class ChemnitzDataDownloader:
@@ -465,7 +465,7 @@ class ChemnitzDataDownloader:
 
     async def download_all_datasets(self):
         """Download all datasets with optimized batching and concurrency"""
-        logger.info("Starting optimized Chemnitz Open Data download")
+        logger.info("[CHEMNITZ] Starting optimized Chemnitz Open Data download")
 
         # Load dataset metadata
         metadatas = await self.load_datasets_metadata_from_csv()
@@ -474,7 +474,7 @@ class ChemnitzDataDownloader:
             return
 
         logger.info(
-            f"Found {len(metadatas)} datasets for download with {self.max_workers} workers"
+            f"[CHEMNITZ] Found {len(metadatas)} datasets for download with {self.max_workers} workers"
         )
         logger.debug(f"Saving datasets to folder: {self.output_dir.absolute()}")
         logger.debug("-" * 50)
@@ -512,6 +512,7 @@ class ChemnitzDataDownloader:
                     await self.update_stats("errors")
 
             logger.info(
+                "[CHEMNITZ] "
                 f"Completed batch {i // self.batch_size + 1}/"
                 f"{(len(metadatas) + self.batch_size - 1) // self.batch_size}"
             )

@@ -20,7 +20,7 @@ from src.utils.embeddings_utils import extract_data_content
 from src.vector_search.vector_db import VectorDB, get_vector_db
 from src.vector_search.vector_db_buffer import VectorDBBuffer
 
-logger = get_logger(__name__, "DRESDEN")
+logger = get_logger(__name__)
 
 
 class DresdenOpenDataDownloader:
@@ -580,7 +580,7 @@ class DresdenOpenDataDownloader:
         downloads = await self.extract_download_urls(dataset_metadata, dataset_uri)
 
         if not downloads:
-            logger.warning(f"No download files found for dataset: {title}")
+            logger.debug(f"No download files found for dataset: {title}")
             # Still save metadata even if no downloads
             metadata_file = dataset_dir / "metadata.json"
             async with aiofiles.open(metadata_file, "w", encoding="utf-8") as f:
@@ -703,6 +703,7 @@ class DresdenOpenDataDownloader:
                 eta = (total - processed) / rate if rate > 0 else 0
 
                 logger.info(
+                    "[DRESDEN] "
                     f"Progress: {processed}/{total} ({percentage:.1f}%) - "
                     f"Files: {files} - Errors: {errors} - "
                     f"Cache hits: {cache_hits} - Retries: {retries} - "
@@ -711,7 +712,7 @@ class DresdenOpenDataDownloader:
 
     async def download_all_datasets(self):
         """Download all datasets with optimized async processing"""
-        logger.info("Starting optimized Dresden Open Data download")
+        logger.info("[DRESDEN] Starting optimized Dresden Open Data download")
 
         # First, collect all datasets
         all_datasets = await self.collect_all_datasets()
@@ -770,7 +771,7 @@ class DresdenOpenDataDownloader:
         if self.is_embeddings:
             await self.vector_db_buffer.flush()
 
-        logger.info("🎉 Download completed!")
+        logger.info("[DRESDEN] 🎉 Download completed!")
 
         # Final statistics
         end_time = datetime.now()

@@ -16,13 +16,13 @@ from src.datasets.datasets_metadata import (
     DatasetJSONEncoder,
     DatasetMetadataWithContent,
 )
+from src.infrastructure.logger import get_prefixed_logger
 from src.utils.datasets_utils import sanitize_filename, safe_delete
-from src.infrastructure.logger import get_logger
 from src.utils.embeddings_utils import extract_data_content
 from src.vector_search.vector_db import VectorDB, get_vector_db
 from src.vector_search.vector_db_buffer import VectorDBBuffer
 
-logger = get_logger(__name__)
+logger = get_prefixed_logger(__name__, "LEIPZIG")
 
 
 class LeipzigCSVJSONDownloader:
@@ -165,7 +165,7 @@ class LeipzigCSVJSONDownloader:
                         return []
 
                     packages = data["result"]
-                    logger.info(f"[LEIPZIG] 📊 Total packages found: {len(packages)}")
+                    logger.info(f"📊 Total packages found: {len(packages)}")
                     return packages
 
             except Exception as e:
@@ -278,11 +278,11 @@ class LeipzigCSVJSONDownloader:
                 logger.debug(f"\tChecked {checked}/{len(all_packages)} packages...")
 
             logger.info(
-                f"[LEIPZIG] ✅ Found {len(target_packages)} packages with CSV/JSON/GeoJSON"
+                f"✅ Found {len(target_packages)} packages with CSV/JSON/GeoJSON"
             )
             async with self.stats_lock:
                 logger.info(
-                    f"[LEIPZIG] 📋 Total target resources: {self.stats['total_target_resources']}"
+                    f"📋 Total target resources: {self.stats['total_target_resources']}"
                 )
 
             return target_packages
@@ -546,7 +546,7 @@ Filter: CSV and JSON formats only
 
     async def download_csv_json_only(self, limit: Optional[int] = None):
         """Main download method"""
-        logger.info("[LEIPZIG] Start Leipzig CSV & JSON Data Downloader")
+        logger.info("Start Leipzig CSV & JSON Data Downloader")
         logger.debug(f"📁 Output directory: {self.output_dir.absolute()}")
         logger.debug("=" * 50)
 

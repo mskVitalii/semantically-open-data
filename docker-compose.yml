@@ -41,12 +41,14 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
+      embedder:
+        condition: service_started
     env_file:
       - .env.prod
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
-      - ./cache:/app/cache
+      - models_cache:/app/models_cache
     restart: unless-stopped
     # Increase timeout for model loading
 #    stop_grace_period: 60s
@@ -54,17 +56,29 @@ services:
       - app_network
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
-      interval: 10s
+      interval: 60s
       timeout: 5s
       retries: 3
       start_period: 5s
+
+  embedder:
+    image: mskkote/open-data-embedder:latest
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/healthz" ]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - app_network
 
 # Optional: Add network for better isolation
 networks:
   app_network:
     driver: bridge
 
-# Named volumes for better management
 volumes:
-  cache:
-    driver: local
+  models_cache:

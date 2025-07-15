@@ -14,13 +14,13 @@ from src.datasets.datasets_metadata import (
     DatasetJSONEncoder,
     DatasetMetadataWithContent,
 )
+from src.infrastructure.logger import get_prefixed_logger
 from src.utils.datasets_utils import sanitize_filename, safe_delete
-from src.infrastructure.logger import get_logger
 from src.utils.embeddings_utils import extract_data_content
 from src.vector_search.vector_db import VectorDB, get_vector_db
 from src.vector_search.vector_db_buffer import VectorDBBuffer
 
-logger = get_logger(__name__)
+logger = get_prefixed_logger(__name__, "DRESDEN")
 
 
 class DresdenOpenDataDownloader:
@@ -703,16 +703,15 @@ class DresdenOpenDataDownloader:
                 eta = (total - processed) / rate if rate > 0 else 0
 
                 logger.info(
-                    "[DRESDEN] "
-                    f"Progress: {processed}/{total} ({percentage:.1f}%) - "
-                    f"Files: {files} - Errors: {errors} - "
-                    f"Cache hits: {cache_hits} - Retries: {retries} - "
-                    f"Rate: {rate:.1f} datasets/s - ETA: {eta:.0f}s"
+                    f"Progress: {processed}/{total} ({percentage:.1f}%)\t"
+                    f"Files: {files}\tErrors: {errors}\t"
+                    f"Cache hits: {cache_hits}\tRetries: {retries}\t"
+                    f"Rate: {rate:.1f} datasets/s\tETA: {eta:.0f}s"
                 )
 
     async def download_all_datasets(self):
         """Download all datasets with optimized async processing"""
-        logger.info("[DRESDEN] Starting optimized Dresden Open Data download")
+        logger.info("Starting optimized Dresden Open Data download")
 
         # First, collect all datasets
         all_datasets = await self.collect_all_datasets()
@@ -771,7 +770,7 @@ class DresdenOpenDataDownloader:
         if self.is_embeddings:
             await self.vector_db_buffer.flush()
 
-        logger.info("[DRESDEN] 🎉 Download completed!")
+        logger.info("🎉 Download completed!")
 
         # Final statistics
         end_time = datetime.now()

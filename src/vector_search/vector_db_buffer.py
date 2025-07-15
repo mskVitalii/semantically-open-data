@@ -12,7 +12,7 @@ class VectorDBBuffer:
     """Buffer for batching dataset indexing operations"""
 
     def __init__(
-        self, vector_db: VectorDB, buffer_size: int = 100, auto_flush: bool = True
+        self, vector_db: VectorDB, buffer_size: int = 150, auto_flush: bool = True
     ):
         """
         Initialize the buffer
@@ -137,91 +137,91 @@ class VectorDBBuffer:
 
 
 # Example usage:
-async def main():
-    # Initialize AsyncVectorDB
-    from src.vector_search.vector_db import get_vector_db
-
-    vector_db_main = await get_vector_db(use_grpc=True)
-
-    try:
-        # Create buffer with auto-flush at 100 records
-        buffer = VectorDBBuffer(vector_db_main, buffer_size=100, auto_flush=True)
-
-        # Example 1: Add datasets one by one
-        for i in range(250):
-            dataset_main = DatasetMetadataWithContent(
-                id=f"dataset_{i}",
-                title=f"Dataset {i}",
-                description=f"Description for dataset {i}",
-                content=f"Content for dataset {i}",
-                city="Chemnitz",
-                state="Saxony",
-                country="Germany",
-            )
-            await buffer.add(dataset_main)  # Will auto-flush at 100 and 200
-
-        # Flush remaining datasets
-        await buffer.flush()  # Will flush the remaining 50
-
-        # Example 2: Using async context manager
-        async with VectorDBBuffer(vector_db_main, buffer_size=50) as buffer2:
-            datasets_main = [
-                DatasetMetadataWithContent(
-                    id=f"batch_{i}",
-                    title=f"Batch Dataset {i}",
-                    description=f"Batch description {i}",
-                    content=f"Batch content {i}",
-                    city="Chemnitz",
-                )
-                for i in range(30)
-            ]
-            await buffer2.add_batch(datasets_main)
-            # Buffer will be automatically flushed when exiting the context
-
-        print(f"Total datasets indexed: {buffer.total_indexed}")
-
-    finally:
-        # Clean up
-        await vector_db_main.qdrant.close()
-
-
-# Example 3: Concurrent operations
-async def concurrent_example():
-    from src.vector_search.vector_db import get_vector_db
-
-    vector_db = await get_vector_db(use_grpc=True)
-
-    try:
-        async with VectorDBBuffer(vector_db, buffer_size=100) as buffer:
-            # Create multiple tasks that add data concurrently
-            async def add_datasets(start_idx: int, count: int):
-                for i in range(start_idx, start_idx + count):
-                    dataset = DatasetMetadataWithContent(
-                        id=f"concurrent_{i}",
-                        title=f"Concurrent Dataset {i}",
-                        description=f"Description {i}",
-                        content=f"Content {i}",
-                        city="Dresden",
-                    )
-                    await buffer.add(dataset)
-
-            # Run multiple concurrent tasks
-            tasks = [
-                add_datasets(0, 50),
-                add_datasets(50, 50),
-                add_datasets(100, 50),
-            ]
-            await asyncio.gather(*tasks)
-
-        print(f"Concurrently indexed: {buffer.total_indexed} datasets")
-
-    finally:
-        await vector_db.qdrant.close()
-
-
-if __name__ == "__main__":
-    # Run the async main function
-    asyncio.run(main())
-
-    # Or run the concurrent example
-    # asyncio.run(concurrent_example())
+# async def main():
+#     # Initialize AsyncVectorDB
+#     from src.vector_search.vector_db import get_vector_db
+#
+#     vector_db_main = await get_vector_db(use_grpc=True)
+#
+#     try:
+#         # Create buffer with auto-flush at 100 records
+#         buffer = VectorDBBuffer(vector_db_main, buffer_size=100, auto_flush=True)
+#
+#         # Example 1: Add datasets one by one
+#         for i in range(250):
+#             dataset_main = DatasetMetadataWithContent(
+#                 id=f"dataset_{i}",
+#                 title=f"Dataset {i}",
+#                 description=f"Description for dataset {i}",
+#                 content=f"Content for dataset {i}",
+#                 city="Chemnitz",
+#                 state="Saxony",
+#                 country="Germany",
+#             )
+#             await buffer.add(dataset_main)  # Will auto-flush at 100 and 200
+#
+#         # Flush remaining datasets
+#         await buffer.flush()  # Will flush the remaining 50
+#
+#         # Example 2: Using async context manager
+#         async with VectorDBBuffer(vector_db_main, buffer_size=50) as buffer2:
+#             datasets_main = [
+#                 DatasetMetadataWithContent(
+#                     id=f"batch_{i}",
+#                     title=f"Batch Dataset {i}",
+#                     description=f"Batch description {i}",
+#                     content=f"Batch content {i}",
+#                     city="Chemnitz",
+#                 )
+#                 for i in range(30)
+#             ]
+#             await buffer2.add_batch(datasets_main)
+#             # Buffer will be automatically flushed when exiting the context
+#
+#         print(f"Total datasets indexed: {buffer.total_indexed}")
+#
+#     finally:
+#         # Clean up
+#         await vector_db_main.qdrant.close()
+#
+#
+# # Example 3: Concurrent operations
+# async def concurrent_example():
+#     from src.vector_search.vector_db import get_vector_db
+#
+#     vector_db = await get_vector_db(use_grpc=True)
+#
+#     try:
+#         async with VectorDBBuffer(vector_db, buffer_size=100) as buffer:
+#             # Create multiple tasks that add data concurrently
+#             async def add_datasets(start_idx: int, count: int):
+#                 for i in range(start_idx, start_idx + count):
+#                     dataset = DatasetMetadataWithContent(
+#                         id=f"concurrent_{i}",
+#                         title=f"Concurrent Dataset {i}",
+#                         description=f"Description {i}",
+#                         content=f"Content {i}",
+#                         city="Dresden",
+#                     )
+#                     await buffer.add(dataset)
+#
+#             # Run multiple concurrent tasks
+#             tasks = [
+#                 add_datasets(0, 50),
+#                 add_datasets(50, 50),
+#                 add_datasets(100, 50),
+#             ]
+#             await asyncio.gather(*tasks)
+#
+#         print(f"Concurrently indexed: {buffer.total_indexed} datasets")
+#
+#     finally:
+#         await vector_db.qdrant.close()
+#
+#
+# if __name__ == "__main__":
+#     # Run the async main function
+#     asyncio.run(main())
+#
+#     # Or run the concurrent example
+#     # asyncio.run(concurrent_example())

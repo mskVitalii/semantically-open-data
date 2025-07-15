@@ -1,9 +1,10 @@
+import logging
 import shutil
 from logging import Logger
 from pathlib import Path
 
 
-def safe_delete(path: Path, logger: Logger):
+def safe_delete(path: Path, logger: Logger | logging.LoggerAdapter):
     if path.exists():
         if path.is_file():
             path.unlink()

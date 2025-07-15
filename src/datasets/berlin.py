@@ -15,7 +15,7 @@ from src.datasets.datasets_metadata import (
     DatasetJSONEncoder,
     DatasetMetadataWithContent,
 )
-from src.infrastructure.logger import get_logger
+from src.infrastructure.logger import get_prefixed_logger
 from src.utils.datasets_utils import (
     safe_delete,
     sanitize_filename,
@@ -28,7 +28,7 @@ from src.vector_search.vector_db_buffer import VectorDBBuffer
 if TYPE_CHECKING:
     from _typeshed import SupportsWrite  # noqa: F401
 
-logger = get_logger(__name__)
+logger = get_prefixed_logger(__name__, "BERLIN")
 
 
 class BerlinOpenDataDownloader:
@@ -188,7 +188,7 @@ class BerlinOpenDataDownloader:
                     if data.get("success"):
                         packages = data.get("result", [])
                         self.stats["datasets_found"] = len(packages)
-                        logger.info(f"[BERLIN] Found {len(packages)} datasets")
+                        logger.info(f"Found {len(packages)} datasets")
                         return packages
                     else:
                         logger.error(f"API error: {data.get('error')}")
@@ -578,16 +578,16 @@ class BerlinOpenDataDownloader:
                 eta = (total - processed) / rate if rate > 0 else 0
 
                 logger.info(
-                    "[BERLIN] "
-                    f"Progress: {processed}/{total} ({percentage:.1f}%) - "
-                    f"Files: {files} - Errors: {errors} - "
-                    f"Cache hits: {cache_hits} - Playwright: {playwright} - "
-                    f"Rate: {rate:.1f} datasets/s - ETA: {eta:.0f}s"
+                    ""
+                    f"Progress: {processed}/{total} ({percentage:.1f}%)\t"
+                    f"Files: {files}\tErrors: {errors}\t"
+                    f"Cache hits: {cache_hits}\tPlaywright: {playwright}\t"
+                    f"Rate: {rate:.1f} datasets/s\tETA: {eta:.0f}s"
                 )
 
     async def download_all_datasets(self):
         """Optimized download with batching and better concurrency"""
-        logger.info("[BERLIN] Starting optimized Berlin Open Data download")
+        logger.info("Starting optimized Berlin Open Data download")
 
         # Get list of all packages
         packages = await self.get_all_packages()
@@ -646,7 +646,7 @@ class BerlinOpenDataDownloader:
         if self.vector_db_buffer:
             await self.vector_db_buffer.flush()
 
-        logger.info("[BERLIN] 🎉 Download completed!")
+        logger.info("🎉 Download completed!")
 
         # Final statistics
         end_time = datetime.now()

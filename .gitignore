@@ -176,6 +176,7 @@ $RECYCLE.BIN/
 temp/
 tmp/
 cache/
+models_cache/
 secrets/
 config/local.py
 *.bak

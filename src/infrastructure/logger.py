@@ -21,3 +21,31 @@ def get_logger(name: str) -> Logger:
     )
     logger = logging.getLogger(name)
     return logger
+
+
+# region Prefix
+
+
+class PrefixAdapter(logging.LoggerAdapter):
+    def __init__(self, logger, prefix):
+        super().__init__(logger, {})
+        self.prefix = prefix
+
+    def process(self, msg, kwargs):
+        return f"[{self.prefix}]\t{msg}", kwargs
+
+
+def get_prefixed_logger(name: str, prefix: str) -> logging.LoggerAdapter:
+    logger = get_logger(name)
+    prefixed_logger = PrefixAdapter(logger, prefix)
+    return prefixed_logger
+
+
+# endregion
+
+# if __name__ == "__main__":
+#     logger = get_logger("test")
+#     prefixed_logger = get_prefixed_logger("test", "PREFIX")
+#
+#     logger.info("Обычное сообщение")
+#     prefixed_logger.info("Сообщение с префиксом")

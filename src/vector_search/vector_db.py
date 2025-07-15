@@ -22,7 +22,7 @@ from src.infrastructure.config import (
     EMBEDDING_DIM,
     QDRANT_COLLECTION_NAME,
 )
-from src.vector_search.embedder import get_embedder
+from src.vector_search.embedder import embed_batch, embed
 
 logger = logging.getLogger(__name__)
 
@@ -35,47 +35,20 @@ class VectorDB:
         # Use environment variable if not explicitly set
         self.use_grpc = use_grpc if use_grpc is not None else USE_GRPC
         self.qdrant: AsyncQdrantClient | None = None
-        self.embedder = get_embedder()
 
     async def initialize(self):
         """Async initialization of client and resources"""
-        # Initialize Qdrant client
-        if self.use_grpc:
-            logger.info(
-                f"Connecting to Qdrant via gRPC at {QDRANT_HOST}:{QDRANT_GRPC_PORT}"
-            )
-            self.qdrant = AsyncQdrantClient(
-                host=QDRANT_HOST,
-                port=QDRANT_GRPC_PORT,
-                grpc_port=QDRANT_GRPC_PORT,
-                prefer_grpc=True,
-                timeout=30,
-            )
-        else:
-            logger.info(
-                f"Connecting to Qdrant via HTTP at {QDRANT_HOST}:{QDRANT_HTTP_PORT}"
-            )
-            self.qdrant = AsyncQdrantClient(
-                host=QDRANT_HOST,
-                port=QDRANT_HTTP_PORT,
-                prefer_grpc=False,
-            )
-
-        # Wait for Qdrant to be ready
+        self.qdrant = await get_qdrant(self.use_grpc)
         await self._wait_for_qdrant()
-
-        # Setup collection
         await self.setup_collection()
 
-    async def __aenter__(self):
-        """Async context manager entry"""
-        return self
+    # async def __aenter__(self):
+    #     """Async context manager entry"""
+    #     return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit"""
         logger.warning("VectorDB __aexit__".upper())
-        if self.qdrant:
-            await self.qdrant.close()
 
     def __del__(self):
         logger.warning("VectorDB instance is being deleted".upper())
@@ -98,6 +71,7 @@ class VectorDB:
 
     async def setup_collection(self):
         """Create Qdrant collection if not exists"""
+        logger.info("[VECTOR_DB] setup_collection")
         collections_response = await self.qdrant.get_collections()
         collections = collections_response.collections
 
@@ -128,19 +102,24 @@ class VectorDB:
         logger.info(f"Indexing {len(datasets)} datasets...")
 
         # Prepare texts for embedding
-        texts = [ds.to_searchable_text() for ds in datasets]
-
+        try:
+            texts = [ds.to_searchable_text() for ds in datasets]
+            logger.info(f"[VECTOR_DB] texts are ready {len(texts)}")
+        except Exception as e:
+            logger.error("[VECTOR_DB] exception!", exc_info=e)
+            return
         # Generate embeddings in batches (assuming embedder is sync for now)
         # If you have an async embedder, replace this with await
-        embeddings = await asyncio.to_thread(
-            self.embedder.embed_batch, texts, batch_size=4
-        )
+        embeddings = await embed_batch(texts)
+
+        logger.info(f"[VECTOR_DB] END embeddings {len(embeddings)}")
 
         # Prepare points for Qdrant
         points = [
             PointStruct(id=idx, vector=embedding.tolist(), payload=dataset.to_payload())
             for idx, (dataset, embedding) in enumerate(zip(datasets, embeddings))
         ]
+        logger.info(f"[VECTOR_DB] END points {len(points)}")
 
         # Upload to Qdrant in batches for better performance
         total_points = len(points)
@@ -167,7 +146,7 @@ class VectorDB:
             logger.info(f"Filtering by city: {city_filter}")
 
         # Generate query embedding (assuming embedder is sync)
-        query_embedding = await asyncio.to_thread(self.embedder.embed, query)
+        query_embedding = await embed(query)
 
         # Build filter if city specified
         search_filter = None
@@ -196,9 +175,7 @@ class VectorDB:
         logger.info(f"\nBatch searching for {len(queries)} queries")
 
         # Generate embeddings for all queries concurrently
-        query_embeddings = await asyncio.gather(
-            *[asyncio.to_thread(self.embedder.embed, q) for q in queries]
-        )
+        query_embeddings = await embed_batch(queries)
 
         # Build filter
         search_filter = None
@@ -284,3 +261,38 @@ async def get_vector_db(use_grpc: bool = True) -> VectorDB:
         vector_db = VectorDB(use_grpc=use_grpc)
         await vector_db.initialize()
     return vector_db
+
+
+qdrant: AsyncQdrantClient | None = None
+
+
+async def init_qdrant(use_grpc: bool = True) -> AsyncQdrantClient:
+    # Initialize Qdrant client
+    if use_grpc:
+        logger.info(
+            f"Connecting to Qdrant via gRPC at {QDRANT_HOST}:{QDRANT_GRPC_PORT}"
+        )
+        return AsyncQdrantClient(
+            host=QDRANT_HOST,
+            port=QDRANT_GRPC_PORT,
+            grpc_port=QDRANT_GRPC_PORT,
+            prefer_grpc=True,
+            timeout=30,
+        )
+    else:
+        logger.info(
+            f"Connecting to Qdrant via HTTP at {QDRANT_HOST}:{QDRANT_HTTP_PORT}"
+        )
+        return AsyncQdrantClient(
+            host=QDRANT_HOST,
+            port=QDRANT_HTTP_PORT,
+            prefer_grpc=False,
+        )
+
+
+async def get_qdrant(use_grpc: bool = True) -> AsyncQdrantClient:
+    """Helper function to create and initialize the async Qdrant client"""
+    global qdrant
+    if qdrant is None:
+        qdrant = await init_qdrant(use_grpc)
+    return qdrant

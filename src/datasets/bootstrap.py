@@ -93,10 +93,10 @@ async def bootstrap_data():
 
     # Create tasks for each city
     tasks = [
-        # download_berlin(),
+        download_berlin(),
         download_chemnitz(),
-        # download_leipzig(),
-        # download_dresden(),
+        download_leipzig(),
+        download_dresden(),
     ]
 
     # Run all tasks concurrently
@@ -108,5 +108,5 @@ async def bootstrap_data():
         raise
 
 
-if __name__ == "__main__":
-    asyncio.run(bootstrap_data())
+# if __name__ == "__main__":
+#     asyncio.run(bootstrap_data())

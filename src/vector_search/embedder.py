@@ -15,7 +15,6 @@ async def embed(text: str) -> np.ndarray:
 
 async def embed_batch(texts: list[str]) -> list[np.ndarray]:
     logger.info(f"working with texts {len(texts)}")
-    logger.info(f"URL: {EMBEDDER_URL}")
     async with httpx.AsyncClient() as client:
         response = await client.post(
             url=EMBEDDER_URL + "/embed",
@@ -24,4 +23,5 @@ async def embed_batch(texts: list[str]) -> list[np.ndarray]:
         )
     response.raise_for_status()
     data = response.json()["embeddings"]
+    logger.info(f"✅ embeddings done! {len(data)}")
     return [np.array(vec, dtype=np.float32) for vec in data]

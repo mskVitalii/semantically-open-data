@@ -1,5 +1,3 @@
-import asyncio
-
 from fastapi import Depends
 
 from ...datasets.bootstrap import bootstrap_data
@@ -70,7 +68,7 @@ class DatasetService:
         try:
             await self.vector_db.remove_collection()
             await self.vector_db.setup_collection()
-            asyncio.create_task(bootstrap_data())
+            await bootstrap_data()
             return True
         except Exception as e:
             logger.error(f"bootstrap_datasets error: {e}")

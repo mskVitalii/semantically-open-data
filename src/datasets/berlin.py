@@ -132,7 +132,7 @@ class BerlinOpenDataDownloader:
         if self.is_embeddings:
             self.vector_db = await get_vector_db(use_grpc=True)
             self.vector_db_buffer = VectorDBBuffer(
-                self.vector_db, buffer_size=100, auto_flush=True
+                self.vector_db, buffer_size=150, auto_flush=True
             )
 
         return self

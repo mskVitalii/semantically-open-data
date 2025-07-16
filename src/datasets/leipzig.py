@@ -129,9 +129,7 @@ class LeipzigCSVJSONDownloader:
         # Initialize async VectorDB if embeddings are enabled
         if self.is_embeddings:
             self.vector_db = await get_vector_db(use_grpc=True)
-            self.vector_db_buffer = VectorDBBuffer(
-                self.vector_db, buffer_size=100, auto_flush=True
-            )
+            self.vector_db_buffer = VectorDBBuffer(self.vector_db, auto_flush=True)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

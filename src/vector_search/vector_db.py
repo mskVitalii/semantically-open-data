@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 from typing import List, Optional
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http.models import QueryRequest, ScoredPoint
@@ -11,7 +12,6 @@ from qdrant_client.models import (
     MatchValue,
     PayloadSchemaType,
 )
-import logging
 
 from src.datasets.datasets_metadata import DatasetMetadataWithContent
 from src.infrastructure.config import (
@@ -22,9 +22,10 @@ from src.infrastructure.config import (
     EMBEDDING_DIM,
     QDRANT_COLLECTION_NAME,
 )
+from src.infrastructure.logger import get_prefixed_logger
 from src.vector_search.embedder import embed_batch, embed
 
-logger = logging.getLogger(__name__)
+logger = get_prefixed_logger(__name__, "VECTOR_DB")
 
 
 class VectorDB:
@@ -71,7 +72,7 @@ class VectorDB:
 
     async def setup_collection(self):
         """Create Qdrant collection if not exists"""
-        logger.info("[VECTOR_DB] setup_collection")
+        logger.info("setup_collection")
         collections_response = await self.qdrant.get_collections()
         collections = collections_response.collections
 
@@ -104,22 +105,24 @@ class VectorDB:
         # Prepare texts for embedding
         try:
             texts = [ds.to_searchable_text() for ds in datasets]
-            logger.info(f"[VECTOR_DB] texts are ready {len(texts)}")
+            logger.info(f"texts are ready {len(texts)}")
         except Exception as e:
-            logger.error("[VECTOR_DB] exception!", exc_info=e)
+            logger.error("exception!", exc_info=e)
             return
         # Generate embeddings in batches (assuming embedder is sync for now)
         # If you have an async embedder, replace this with await
         embeddings = await embed_batch(texts)
 
-        logger.info(f"[VECTOR_DB] END embeddings {len(embeddings)}")
-
         # Prepare points for Qdrant
         points = [
-            PointStruct(id=idx, vector=embedding.tolist(), payload=dataset.to_payload())
-            for idx, (dataset, embedding) in enumerate(zip(datasets, embeddings))
+            PointStruct(
+                id=str(uuid.uuid4()),
+                vector=embedding.tolist(),
+                payload=dataset.to_payload(),
+            )
+            for dataset, embedding in zip(datasets, embeddings)
         ]
-        logger.info(f"[VECTOR_DB] END points {len(points)}")
+        logger.info(f"END points {len(points)}")
 
         # Upload to Qdrant in batches for better performance
         total_points = len(points)

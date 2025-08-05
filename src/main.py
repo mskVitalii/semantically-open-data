@@ -1,18 +1,39 @@
+from contextlib import asynccontextmanager
+
+from starlette import status
 from starlette.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse
 
 from src.datasets_api.router import v1_router
+from src.infrastructure.config import MONGO_INITDB_DATABASE
 from src.infrastructure.logger import get_logger
 
 
 from fastapi import FastAPI
 
+from src.infrastructure.mongo import (
+    connect_to_mongo,
+    close_mongo_connection,
+    MongoClientDep,
+    MongoDBDep,
+)
+
 logger = get_logger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    logger.info("lifespan")
+    await connect_to_mongo()
+    yield
+    await close_mongo_connection()
 
 
 app = FastAPI(
     title="Semantic Open Data API",
     description="API to semantically search datasets. Responses to the questions",
     version="1.0.0",
+    lifespan=lifespan,
 )
 app.add_middleware(
     CORSMiddleware,
@@ -32,9 +53,47 @@ async def root():
 
 
 @app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy"}
+async def health_check(client: MongoClientDep):
+    try:
+        await client.admin.command("ping")
+
+        return {
+            "status": "healthy",
+            "database": "connected",
+            "database_name": MONGO_INITDB_DATABASE,
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "unhealthy", "database": "error", "error": str(e)},
+        )
+
+
+@app.get("/health/detailed")
+async def detailed_health_check(client: MongoClientDep, database: MongoDBDep):
+    health_status = {"status": "healthy", "checks": {}}
+
+    try:
+        await client.admin.command("ping")
+        server_info = await client.server_info()
+        db_stats = await database.command("dbStats")
+
+        health_status["checks"]["mongodb"] = {
+            "status": "up",
+            "version": server_info.get("version"),
+            "database": MONGO_INITDB_DATABASE,
+            "collections": db_stats.get("collections"),
+            "objects": db_stats.get("objects"),
+            "dataSize": db_stats.get("dataSize"),
+        }
+    except Exception as e:
+        health_status["status"] = "unhealthy"
+        health_status["checks"]["mongodb"] = {"status": "down", "error": str(e)}
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=health_status
+        )
+
+    return health_status
 
 
 # def main():

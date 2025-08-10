@@ -1,23 +1,29 @@
+# src/datasets_api/service.py
 from fastapi import Depends
 
-from ...datasets.bootstrap import bootstrap_data
-from ...datasets.datasets_metadata import DatasetMetadataWithContent
-from ...datasets_api.datasets_dto import (
+from src.datasets.bootstrap import bootstrap_data
+from src.datasets.datasets_metadata import DatasetMetadataWithContent
+from src.domain.repositories.dataset_repository import (
+    DatasetRepository,
+    get_dataset_repository,
+)
+from src.datasets_api.datasets_dto import (
     DatasetSearchRequest,
     DatasetSearchResponse,
     DatasetResponse,
 )
-from ...infrastructure.logger import get_logger
-from ...vector_search.vector_db import VectorDB, get_vector_db
+from src.infrastructure.logger import get_prefixed_logger
+from src.vector_search.vector_db import VectorDB, get_vector_db
 
-logger = get_logger(__name__)
+logger = get_prefixed_logger(__name__, "DATASET_SERVICE")
 
 
 class DatasetService:
     """Service for working with datasets"""
 
-    def __init__(self, vector_db: VectorDB):
+    def __init__(self, vector_db: VectorDB, repository: DatasetRepository):
         self.vector_db = vector_db
+        self.repository = repository
 
     async def search_datasets(
         self, request: DatasetSearchRequest
@@ -65,17 +71,36 @@ class DatasetService:
         )
 
     async def bootstrap_datasets(self) -> bool:
+        """Bootstrap datasets - clear and reload all data"""
         try:
+            # Clear MongoDB
+            deleted_count = await self.repository.delete_all()
+            logger.info(f"Deleted {deleted_count} datasets from MongoDB")
+
+            # Clear vector DB
             await self.vector_db.remove_collection()
             await self.vector_db.setup_collection()
+
+            # Bootstrap data (this should populate both MongoDB and vector DB)
             await bootstrap_data()
+
+            # Create indexes for better performance
+            await self.repository.create_indexes()
+
+            # Get statistics
+            stats = await self.repository.get_statistics()
+            logger.info(f"Bootstrap completed. Stats: {stats}")
+
             return True
         except Exception as e:
             logger.error(f"bootstrap_datasets error: {e}")
             return False
 
 
+# Dependency injection
 async def get_dataset_service(
     vector_db: VectorDB = Depends(get_vector_db),
+    repository: DatasetRepository = Depends(get_dataset_repository),
 ) -> DatasetService:
-    return DatasetService(vector_db)
+    """Get DatasetService instance with dependencies"""
+    return DatasetService(vector_db, repository)

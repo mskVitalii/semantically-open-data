@@ -8,6 +8,7 @@ from src.vector_search.vector_db import VectorDB
 logger = logging.getLogger(__name__)
 
 
+# TODO: Make this buffer common and many handlers?
 class VectorDBBuffer:
     """Buffer for batching dataset indexing operations"""
 

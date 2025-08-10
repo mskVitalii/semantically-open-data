@@ -1,5 +1,7 @@
 import os
+from dotenv import load_dotenv
 
+load_dotenv()
 # Get all the env variables & optional validation
 
 ENV = os.getenv("ENV", "development")

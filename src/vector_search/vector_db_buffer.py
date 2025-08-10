@@ -3,12 +3,13 @@ from typing import List
 import logging
 
 from src.datasets.datasets_metadata import DatasetMetadataWithContent
+from src.utils.buffer_abc import AsyncBuffer
 from src.vector_search.vector_db import VectorDB
 
 logger = logging.getLogger(__name__)
 
 
-class VectorDBBuffer:
+class VectorDBBuffer(AsyncBuffer[DatasetMetadataWithContent]):
     """Buffer for batching dataset indexing operations"""
 
     def __init__(

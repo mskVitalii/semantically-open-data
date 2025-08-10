@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-
+from fastapi import FastAPI
 from starlette import status
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
@@ -7,15 +7,9 @@ from starlette.responses import JSONResponse
 from src.datasets_api.router import v1_router
 from src.infrastructure.config import MONGO_INITDB_DATABASE
 from src.infrastructure.logger import get_logger
-
-
-from fastapi import FastAPI
-
-from src.infrastructure.mongo import (
-    connect_to_mongo,
-    close_mongo_connection,
+from src.infrastructure.mongo_db import (
+    get_mongodb_manager,
     MongoClientDep,
-    MongoDBDep,
 )
 
 logger = get_logger(__name__)
@@ -23,10 +17,15 @@ logger = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    logger.info("lifespan")
-    await connect_to_mongo()
+    logger.info("Starting application...")
+
+    manager = get_mongodb_manager()
+    await manager.connect()
+
     yield
-    await close_mongo_connection()
+
+    await manager.disconnect()
+    logger.info("Application shutdown complete")
 
 
 app = FastAPI(
@@ -35,6 +34,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -48,20 +48,24 @@ app.include_router(v1_router)
 
 @app.get("/")
 async def root():
-    """Root endpoint"""
     return {"message": "Semantic Open Data API is running"}
 
 
 @app.get("/health")
 async def health_check(client: MongoClientDep):
     try:
-        await client.admin.command("ping")
+        manager = get_mongodb_manager()
+        is_healthy = await manager.ping()
 
-        return {
-            "status": "healthy",
-            "database": "connected",
-            "database_name": MONGO_INITDB_DATABASE,
-        }
+        if is_healthy:
+            return {
+                "status": "healthy",
+                "database": "connected",
+                "database_name": MONGO_INITDB_DATABASE,
+            }
+        else:
+            raise Exception("MongoDB ping failed")
+
     except Exception as e:
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -70,22 +74,34 @@ async def health_check(client: MongoClientDep):
 
 
 @app.get("/health/detailed")
-async def detailed_health_check(client: MongoClientDep, database: MongoDBDep):
+async def detailed_health_check(client: MongoClientDep):
+    """Детальная проверка здоровья с метриками"""
     health_status = {"status": "healthy", "checks": {}}
 
     try:
-        await client.admin.command("ping")
-        server_info = await client.server_info()
-        db_stats = await database.command("dbStats")
+        manager = get_mongodb_manager()
+
+        is_connected = await manager.ping()
+        if not is_connected:
+            raise Exception("MongoDB is not responding")
+
+        if not manager.is_testing:
+            server_info = await client.server_info()
+            version = server_info.get("version")
+        else:
+            version = "mock"
+
+        db_stats = await manager.get_database_stats()
 
         health_status["checks"]["mongodb"] = {
             "status": "up",
-            "version": server_info.get("version"),
+            "version": version,
             "database": MONGO_INITDB_DATABASE,
             "collections": db_stats.get("collections"),
             "objects": db_stats.get("objects"),
             "dataSize": db_stats.get("dataSize"),
         }
+
     except Exception as e:
         health_status["status"] = "unhealthy"
         health_status["checks"]["mongodb"] = {"status": "down", "error": str(e)}

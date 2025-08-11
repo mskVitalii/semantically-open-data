@@ -1,29 +1,34 @@
 import asyncio
 
 from src.datasets.datasets_metadata import DatasetMetadataWithContent
+from src.domain.repositories.dataset_repository import DatasetRepository
 from src.infrastructure.logger import get_prefixed_logger
 from src.utils.buffer_abc import AsyncBuffer
-from src.vector_search.vector_db import VectorDB
 
-logger = get_prefixed_logger(__name__, "VECTOR_BUFFER")
+logger = get_prefixed_logger(__name__, "DATASET_DB_BUFFER")
+
+# TODO:
+#  1. Store the metadata (with the collection name for dataset)
+#  2. Create the collection
+#  3. Save the actual dataset to the collection
 
 
-class VectorDBBuffer(AsyncBuffer[DatasetMetadataWithContent]):
-    """Buffer for batching dataset indexing operations"""
+class DatasetDBBuffer(AsyncBuffer[DatasetMetadataWithContent]):
+    """Buffer for batching dataset storing"""
 
-    def __init__(self, vector_db: VectorDB, buffer_size: int = 150):
+    def __init__(self, repository: DatasetRepository, buffer_size: int = 150):
         """
         Initialize the buffer
 
         Args:
-            vector_db: The AsyncVectorDB instance to use for indexing
+            repository: The MongoDBManager instance to use for store
             buffer_size: Maximum number of records to hold before auto-flushing
         """
-        self.vector_db = vector_db
+        self.repository = repository
         self.buffer_size = buffer_size
         self._buffer: list[DatasetMetadataWithContent] = []
         self._lock = asyncio.Lock()  # Async lock for thread safety
-        self._total_indexed = 0
+        self._total_stored = 0
 
     # region Buffer logic
 
@@ -66,8 +71,7 @@ class VectorDBBuffer(AsyncBuffer[DatasetMetadataWithContent]):
 
     @property
     def total_indexed(self) -> int:
-        """Total number of datasets indexed through this buffer"""
-        return self._total_indexed
+        return self._total_stored
 
     async def __aenter__(self):
         """Async context manager entry"""
@@ -98,23 +102,24 @@ class VectorDBBuffer(AsyncBuffer[DatasetMetadataWithContent]):
             return 0
 
         # Get the datasets to index
-        datasets_to_index = self._buffer[:]
+        meta_to_index = self._buffer[:]
 
         try:
             # Index the datasets
-            logger.info(f"Flushing {len(datasets_to_index)} datasets from buffer")
-            await self.vector_db.index_datasets(
-                datasets_to_index, batch_size=self.buffer_size
+            logger.info(f"Flushing {len(meta_to_index)} datasets from buffer")
+            await self.repository.batch_insert(
+                [meta.to_dict() for meta in meta_to_index],
+                batch_size=self.buffer_size,
             )
 
             # Clear the buffer only after successful indexing
             self._buffer.clear()
-            self._total_indexed += len(datasets_to_index)
+            self._total_stored += len(meta_to_index)
 
             logger.info(
-                f"Successfully flushed {len(datasets_to_index)} datasets. Total indexed: {self._total_indexed}"
+                f"Successfully flushed {len(meta_to_index)} datasets. Total indexed: {self._total_stored}"
             )
-            return len(datasets_to_index)
+            return len(meta_to_index)
 
         except Exception as e:
             logger.error(f"Error flushing buffer: {e}")

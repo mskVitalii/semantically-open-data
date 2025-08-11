@@ -35,9 +35,9 @@ class PrefixAdapter(logging.LoggerAdapter):
         return f"[{self.prefix}]\t{msg}", kwargs
 
 
-def get_prefixed_logger(name: str, prefix: str) -> logging.LoggerAdapter:
+def get_prefixed_logger(name: str, prefix: str | None = None) -> logging.LoggerAdapter:
     logger = get_logger(name)
-    prefixed_logger = PrefixAdapter(logger, prefix)
+    prefixed_logger = PrefixAdapter(logger, prefix if prefix is not None else name)
     return prefixed_logger
 
 

@@ -27,3 +27,6 @@ MONGODB_URI = os.getenv(
     "MONGODB_URI",
     f"mongodb://{MONGO_USER}:{MONGO_PASSWORD}@mongodb:{MONGO_PORT}/{MONGO_INITDB_DATABASE}?authSource={MONGO_INITDB_DATABASE}",
 )
+
+
+os.environ["GRPC_VERBOSITY"] = "NONE"

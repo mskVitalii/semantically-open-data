@@ -16,10 +16,14 @@ from src.datasets.datasets_metadata import (
     DatasetMetadataWithContent,
     DatasetJSONEncoder,
 )
+from src.domain.repositories.dataset_repository import get_dataset_repository
+from src.domain.services.dataset_buffer import DatasetDBBuffer
+from src.infrastructure.mongo_db import get_mongo_database
 from src.utils.datasets_utils import sanitize_filename, safe_delete
 from src.infrastructure.logger import get_prefixed_logger
 from src.utils.embeddings_utils import extract_data_content
-from src.vector_search.vector_db import get_vector_db, VectorDB
+from src.utils.file import save_file_with_task
+from src.vector_search.vector_db import get_vector_db
 from src.vector_search.vector_db_buffer import VectorDBBuffer
 
 if TYPE_CHECKING:
@@ -38,6 +42,7 @@ class ChemnitzDataDownloader:
         max_workers: int = 20,
         delay: float = 0.05,
         is_embeddings: bool = False,
+        is_store: bool = False,
         connection_limit: int = 100,
         connection_limit_per_host: int = 30,
         batch_size: int = 50,
@@ -52,6 +57,7 @@ class ChemnitzDataDownloader:
             max_workers: Number of parallel workers
             delay: Delay between requests in seconds
             is_embeddings: Whether to generate embeddings
+            is_store: Whether to save datasets to DB or not
             connection_limit: Total connection pool size
             connection_limit_per_host: Per-host connection limit
             batch_size: Size of dataset batches to process
@@ -83,7 +89,6 @@ class ChemnitzDataDownloader:
             "retries": 0,
         }
         self.stats_lock = asyncio.Lock()
-        self.index_lock = asyncio.Lock()
 
         # Cache for service info to avoid redundant API calls
         self.service_cache = {}
@@ -93,10 +98,11 @@ class ChemnitzDataDownloader:
         self.failed_urls: Set[str] = set()
         self.failed_urls_lock = asyncio.Lock()
 
+        # Async VectorDB & Dataset will be initialized in __aenter__
         self.is_embeddings = is_embeddings
-        # Async VectorDB will be initialized in __aenter__
-        self.vector_db: VectorDB | None = None
+        self.is_store = is_store
         self.vector_db_buffer: VectorDBBuffer | None = None
+        self.dataset_db_buffer: DatasetDBBuffer | None = None
 
     async def __aenter__(self):
         """Async context manager entry with optimized session"""
@@ -127,8 +133,13 @@ class ChemnitzDataDownloader:
 
         # Initialize async VectorDB if embeddings are enabled
         if self.is_embeddings:
-            self.vector_db = await get_vector_db(use_grpc=True)
-            self.vector_db_buffer = VectorDBBuffer(self.vector_db, auto_flush=True)
+            vector_db = await get_vector_db(use_grpc=True)
+            self.vector_db_buffer = VectorDBBuffer(vector_db)
+
+        if self.is_store:
+            database = await get_mongo_database()
+            dataset_db = await get_dataset_repository(database=database)
+            self.dataset_db_buffer: DatasetDBBuffer | None = DatasetDBBuffer(dataset_db)
 
         return self
 
@@ -139,7 +150,13 @@ class ChemnitzDataDownloader:
             try:
                 await self.vector_db_buffer.flush()
             except Exception as e:
-                logger.error(f"Error flushing index buffer: {e}")
+                logger.error(f"Error flushing VECTOR buffer: {e}")
+
+        if self.dataset_db_buffer:
+            try:
+                await self.dataset_db_buffer.flush()
+            except Exception as e:
+                logger.error(f"Error flushing MONGO buffer: {e}")
 
         if self.session:
             await self.session.close()
@@ -249,42 +266,28 @@ class ChemnitzDataDownloader:
                         if response.status == 200:
                             dataset_dir.mkdir(exist_ok=True)
 
-                            # Create temporary file for atomic write
-                            temp_path = file_path.with_suffix(file_path.suffix + ".tmp")
-
                             if format_name == "geojson":
                                 try:
                                     data = await response.json()
                                     features = data.get("features", [])
 
                                     # Use aiofiles for async write
-                                    async with aiofiles.open(
-                                        temp_path, "w", encoding="utf-8"
-                                    ) as f:
-                                        await f.write(
-                                            json.dumps(
-                                                features, ensure_ascii=False, indent=2
-                                            )
-                                        )
-
-                                    # Atomic rename
-                                    temp_path.rename(file_path)
+                                    content = json.dumps(
+                                        features, ensure_ascii=False, indent=2
+                                    )
+                                    save_file_with_task(file_path, content)
 
                                     logger.debug(f"\t\t✓ Saved as {file_name}")
                                     await self.update_stats("layers_downloaded")
                                     return True
 
                                 except json.JSONDecodeError:
-                                    if temp_path.exists():
-                                        temp_path.unlink()
+                                    if file_path.exists():
+                                        file_path.unlink()
                                     continue
                             else:
                                 content = await response.read()
-                                async with aiofiles.open(temp_path, "wb") as f:
-                                    await f.write(content)
-
-                                # Atomic rename
-                                temp_path.rename(file_path)
+                                save_file_with_task(file_path, content, binary=True)
 
                                 logger.debug(f"\t\t✓ Saved as {file_name}")
                                 await self.update_stats("layers_downloaded")
@@ -383,22 +386,23 @@ class ChemnitzDataDownloader:
                 )
 
                 # Save metadata
-                async with aiofiles.open(metadata_file, "w", encoding="utf-8") as f:
-                    await f.write(
-                        json.dumps(
-                            package_meta,
-                            indent=2,
-                            ensure_ascii=False,
-                            cls=DatasetJSONEncoder,
-                        )
-                    )
+                content = json.dumps(
+                    package_meta,
+                    indent=2,
+                    ensure_ascii=False,
+                    cls=DatasetJSONEncoder,
+                )
+                save_file_with_task(metadata_file, content)
 
                 await self.update_stats("files_downloaded")
 
+                package_meta.content = await extract_data_content(dataset_dir)
+
                 if self.is_embeddings and self.vector_db_buffer:
-                    package_meta.content = await extract_data_content(dataset_dir)
-                    async with self.index_lock:
-                        await self.vector_db_buffer.add(package_meta)
+                    await self.vector_db_buffer.add(package_meta)
+
+                if self.is_store and self.dataset_db_buffer:
+                    await self.dataset_db_buffer.add(package_meta)
             else:
                 # Clean up empty dataset
                 safe_delete(dataset_dir, logger)
@@ -465,7 +469,7 @@ class ChemnitzDataDownloader:
         """Download all datasets with optimized batching and concurrency"""
         logger.info("Starting optimized Chemnitz Open Data download")
 
-        # Load dataset metadata
+        # region Load dataset metadata
         metadatas = await self.load_datasets_metadata_from_csv()
         if not metadatas:
             logger.error("No datasets found in CSV file")
@@ -476,8 +480,9 @@ class ChemnitzDataDownloader:
         )
         logger.debug(f"Saving datasets to folder: {self.output_dir.absolute()}")
         logger.debug("-" * 50)
+        # endregion
 
-        # Progress reporting task
+        # region Progress reporting task
         async def progress_reporter():
             while True:
                 await asyncio.sleep(5)  # Report every 5 seconds
@@ -487,6 +492,7 @@ class ChemnitzDataDownloader:
                 await self.print_progress()
 
         progress_task = asyncio.create_task(progress_reporter())
+        # endregion
 
         # Process in batches to avoid overwhelming memory
         for i in range(0, len(metadatas), self.batch_size):
@@ -523,6 +529,8 @@ class ChemnitzDataDownloader:
 
         if self.is_embeddings:
             await self.vector_db_buffer.flush()
+        if self.is_store:
+            await self.dataset_db_buffer.flush()
 
         # Final statistics
         end_time = datetime.now()
@@ -614,6 +622,7 @@ async def async_main():
             max_workers=args.max_workers,
             delay=args.delay,
             is_embeddings=True,
+            is_store=True,
             connection_limit=args.connection_limit,
             batch_size=args.batch_size,
             max_retries=args.max_retries,

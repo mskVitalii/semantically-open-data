@@ -16,10 +16,14 @@ from src.datasets.datasets_metadata import (
     DatasetJSONEncoder,
     DatasetMetadataWithContent,
 )
+from src.domain.repositories.dataset_repository import get_dataset_repository
+from src.domain.services.dataset_buffer import DatasetDBBuffer
 from src.infrastructure.logger import get_prefixed_logger
+from src.infrastructure.mongo_db import get_mongo_database
 from src.utils.datasets_utils import sanitize_filename, safe_delete
 from src.utils.embeddings_utils import extract_data_content
-from src.vector_search.vector_db import VectorDB, get_vector_db
+from src.utils.file import save_file_with_task
+from src.vector_search.vector_db import get_vector_db
 from src.vector_search.vector_db_buffer import VectorDBBuffer
 
 logger = get_prefixed_logger(__name__, "LEIPZIG")
@@ -34,6 +38,7 @@ class LeipzigCSVJSONDownloader:
         max_workers: int = 20,
         delay: float = 0.05,
         is_embeddings: bool = False,
+        is_store: bool = False,
         connection_limit: int = 100,
         connection_limit_per_host: int = 30,
         batch_size: int = 50,
@@ -47,6 +52,7 @@ class LeipzigCSVJSONDownloader:
             max_workers: Number of parallel workers
             delay: Delay between requests in seconds
             is_embeddings: Whether to generate embeddings
+            is_store: Whether to save datasets to DB or not
             connection_limit: Total connection pool size
             connection_limit_per_host: Per-host connection limit
             batch_size: Size of dataset batches to process
@@ -95,9 +101,10 @@ class LeipzigCSVJSONDownloader:
         self.failed_urls_lock = asyncio.Lock()
 
         self.is_embeddings = is_embeddings
+        self.is_store = is_store
         # Async VectorDB will be initialized in __aenter__
-        self.vector_db: VectorDB | None = None
         self.vector_db_buffer: VectorDBBuffer | None = None
+        self.dataset_db_buffer: DatasetDBBuffer | None = None
 
     async def __aenter__(self):
         """Async context manager entry with optimized session"""
@@ -128,8 +135,14 @@ class LeipzigCSVJSONDownloader:
         )
         # Initialize async VectorDB if embeddings are enabled
         if self.is_embeddings:
-            self.vector_db = await get_vector_db(use_grpc=True)
-            self.vector_db_buffer = VectorDBBuffer(self.vector_db, auto_flush=True)
+            vector_db = await get_vector_db(use_grpc=True)
+            self.vector_db_buffer = VectorDBBuffer(vector_db)
+
+        if self.is_store:
+            database = await get_mongo_database()
+            dataset_db = await get_dataset_repository(database=database)
+            self.dataset_db_buffer: DatasetDBBuffer | None = DatasetDBBuffer(dataset_db)
+
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -142,7 +155,13 @@ class LeipzigCSVJSONDownloader:
             try:
                 await self.vector_db_buffer.flush()
             except Exception as e:
-                logger.error(f"Error flushing index buffer: {e}")
+                logger.error(f"Error flushing VECTOR buffer: {e}")
+
+        if self.dataset_db_buffer:
+            try:
+                await self.dataset_db_buffer.flush()
+            except Exception as e:
+                logger.error(f"Error flushing MONGO buffer: {e}")
 
     async def update_stats(self, field: str, increment: int = 1):
         """Thread-safe statistics update"""
@@ -451,9 +470,9 @@ class LeipzigCSVJSONDownloader:
                 3
             )  # Limit concurrent downloads per package
 
-            async def download_with_semaphore(resource):
+            async def download_with_semaphore(_resource):
                 async with download_semaphore:
-                    return await self.download_resource(resource, dataset_dir)
+                    return await self.download_resource(_resource, dataset_dir)
 
             # Try to download at least one resource
             success = False
@@ -467,20 +486,21 @@ class LeipzigCSVJSONDownloader:
 
             if success:
                 # Save metadata
-                async with aiofiles.open(metadata_file, "w", encoding="utf-8") as f:
-                    await f.write(
-                        json.dumps(
-                            package_meta,
-                            ensure_ascii=False,
-                            indent=2,
-                            cls=DatasetJSONEncoder,
-                        )
-                    )
+                content = json.dumps(
+                    package_meta,
+                    ensure_ascii=False,
+                    indent=2,
+                    cls=DatasetJSONEncoder,
+                )
+                save_file_with_task(metadata_file, content)
 
-                if self.is_embeddings:
-                    package_meta.content = await extract_data_content(dataset_dir)
-                    async with self.index_lock:
-                        await self.vector_db_buffer.add(package_meta)
+                package_meta.content = await extract_data_content(dataset_dir)
+
+                if self.is_embeddings and self.vector_db_buffer:
+                    await self.vector_db_buffer.add(package_meta)
+
+                if self.is_store and self.dataset_db_buffer:
+                    await self.dataset_db_buffer.add(package_meta)
             else:
                 # Clean up empty dataset
                 safe_delete(dataset_dir, logger)
@@ -584,10 +604,12 @@ Filter: CSV and JSON formats only
 
         if self.is_embeddings:
             await self.vector_db_buffer.flush()
+        if self.is_store:
+            await self.dataset_db_buffer.flush()
 
         # Final report
         logger.debug("\n" + "=" * 50)
-        logger.info("[LEIPZIG] 🎉 Download completed!")
+        logger.info("🎉 Download completed!")
         await self.create_summary_report()
 
 

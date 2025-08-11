@@ -17,7 +17,8 @@ logger = get_prefixed_logger(__name__, "DATASET_REPOSITORY")
 class DatasetRepository:
     """Repository for datasets in MongoDB"""
 
-    COLLECTION_NAME = "datasets"
+    # TODO: change this class to create collection for each dataset (add field collection everywhere)
+    COLLECTION_NAME = "metadata"
 
     def __init__(self, database: AsyncIOMotorDatabase):
         self.database = database

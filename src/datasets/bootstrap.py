@@ -1,21 +1,23 @@
 import asyncio
+import time
 from pathlib import Path
 
 from src.datasets.berlin import BerlinOpenDataDownloader
 from src.datasets.chemnitz import ChemnitzDataDownloader
 from src.datasets.dresden import DresdenOpenDataDownloader
 from src.datasets.leipzig import LeipzigCSVJSONDownloader
-from src.infrastructure.logger import get_logger
+from src.infrastructure.logger import get_prefixed_logger
 from src.infrastructure.paths import PROJECT_ROOT
 from src.utils.datasets_utils import safe_delete
 
-logger = get_logger(__name__)
+logger = get_prefixed_logger(__name__, "BOOTSTRAP")
 
 
 async def download_berlin():
     """Download Berlin datasets."""
     path = PROJECT_ROOT / "src" / "datasets" / "berlin"
     safe_delete(path, logger)
+    start_time = time.perf_counter()
 
     async with BerlinOpenDataDownloader(
         output_dir=path,
@@ -24,9 +26,12 @@ async def download_berlin():
         batch_size=50,
         connection_limit=100,
         is_embeddings=True,
+        is_store=True,
     ) as downloader:
         await downloader.download_all_datasets()
-    logger.info("✅ Berlin download completed")
+
+    elapsed = time.perf_counter() - start_time
+    logger.info(f"✅ Berlin download completed in {elapsed:.2f} seconds!")
 
 
 async def download_chemnitz():
@@ -38,6 +43,8 @@ async def download_chemnitz():
 
     path = PROJECT_ROOT / "src" / "datasets" / "chemnitz"
     safe_delete(path, logger)
+    start_time = time.perf_counter()
+
     async with ChemnitzDataDownloader(
         csv_file,
         output_dir=path,
@@ -46,16 +53,20 @@ async def download_chemnitz():
         batch_size=50,
         connection_limit=100,
         is_embeddings=True,
+        is_store=True,
         max_retries=1,
     ) as downloader:
         await downloader.download_all_datasets()
-    logger.info("✅ Chemnitz download completed")
+
+    elapsed = time.perf_counter() - start_time
+    logger.info(f"✅ Chemnitz download completed in {elapsed:.2f} seconds!")
 
 
 async def download_leipzig():
     """Download Leipzig datasets."""
     path = PROJECT_ROOT / "src" / "datasets" / "leipzig"
     safe_delete(path, logger)
+    start_time = time.perf_counter()
 
     async with LeipzigCSVJSONDownloader(
         output_dir=path,
@@ -64,15 +75,19 @@ async def download_leipzig():
         batch_size=50,
         connection_limit=100,
         is_embeddings=True,
+        is_store=True,
     ) as downloader:
         await downloader.download_csv_json_only(limit=None)
-    logger.info("✅ Leipzig download completed")
+
+    elapsed = time.perf_counter() - start_time
+    logger.info(f"✅ Leipzig download completed in {elapsed:.2f} seconds!")
 
 
 async def download_dresden():
     """Download Dresden datasets."""
     path = PROJECT_ROOT / "src" / "datasets" / "dresden"
     safe_delete(path, logger)
+    start_time = time.perf_counter()
 
     async with DresdenOpenDataDownloader(
         output_dir=path,
@@ -82,19 +97,23 @@ async def download_dresden():
         connection_limit=100,
         max_retries=1,
         is_embeddings=True,
+        is_store=True,
     ) as downloader:
         await downloader.download_all_datasets()
-    logger.info("✅ Dresden download completed")
+
+    elapsed = time.perf_counter() - start_time
+    logger.info(f"✅ Dresden download completed in {elapsed:.2f} seconds!")
 
 
 async def bootstrap_data():
     """Run all city downloads in parallel."""
     logger.info("🚀 Starting parallel download for all cities...")
+    start_time = time.perf_counter()
 
     # Create tasks for each city
     tasks = [
-        download_berlin(),
         download_chemnitz(),
+        download_berlin(),
         download_leipzig(),
         download_dresden(),
     ]
@@ -102,9 +121,15 @@ async def bootstrap_data():
     # Run all tasks concurrently
     try:
         await asyncio.gather(*tasks)
-        logger.info("✅ All downloads completed successfully!")
+        elapsed = time.perf_counter() - start_time
+        logger.info(
+            f"✅ All downloads completed successfully in {elapsed:.2f} seconds!"
+        )
     except Exception as e:
-        logger.error(f"❌ Error during parallel download: {e}")
+        elapsed = time.perf_counter() - start_time
+        logger.error(
+            f"❌ Error during parallel download after {elapsed:.2f} seconds: {e}"
+        )
         raise
 
 

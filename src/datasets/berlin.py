@@ -15,14 +15,18 @@ from src.datasets.datasets_metadata import (
     DatasetJSONEncoder,
     DatasetMetadataWithContent,
 )
+from src.domain.repositories.dataset_repository import get_dataset_repository
+from src.domain.services.dataset_buffer import DatasetDBBuffer
 from src.infrastructure.logger import get_prefixed_logger
+from src.infrastructure.mongo_db import get_mongo_database
 from src.utils.datasets_utils import (
     safe_delete,
     sanitize_filename,
     skip_formats,
 )
 from src.utils.embeddings_utils import extract_data_content
-from src.vector_search.vector_db import get_vector_db, VectorDB
+from src.utils.file import save_file_with_task
+from src.vector_search.vector_db import get_vector_db
 from src.vector_search.vector_db_buffer import VectorDBBuffer
 
 if TYPE_CHECKING:
@@ -40,6 +44,7 @@ class BerlinOpenDataDownloader:
         max_workers: int = 20,  # Increased default
         delay: float = 0.05,  # Reduced delay
         is_embeddings: bool = False,
+        is_store: bool = False,
         connection_limit: int = 100,  # Total connection pool size
         connection_limit_per_host: int = 30,  # Per-host limit
         batch_size: int = 50,  # Process packages in batches
@@ -52,6 +57,7 @@ class BerlinOpenDataDownloader:
             max_workers: Number of parallel workers
             delay: Delay between requests in seconds
             is_embeddings: Whether to generate embeddings
+            is_store: Whether to save datasets to DB or not
             connection_limit: Total connection pool size
             connection_limit_per_host: Per-host connection limit
             batch_size: Size of package batches to process
@@ -83,7 +89,6 @@ class BerlinOpenDataDownloader:
             "playwright_downloads": 0,
         }
         self.stats_lock = asyncio.Lock()
-        self.index_lock = asyncio.Lock()
 
         # Cache for package details to avoid redundant API calls
         self.package_cache = {}
@@ -98,9 +103,10 @@ class BerlinOpenDataDownloader:
         self.browser_lock = asyncio.Lock()
 
         self.is_embeddings = is_embeddings
+        self.is_store = is_store
         # Async VectorDB will be initialized in __aenter__
-        self.vector_db: VectorDB | None = None
         self.vector_db_buffer: VectorDBBuffer | None = None
+        self.dataset_db_buffer: DatasetDBBuffer | None = None
 
     async def __aenter__(self):
         """Async context manager entry with optimized session"""
@@ -130,10 +136,13 @@ class BerlinOpenDataDownloader:
 
         # Initialize async VectorDB if embeddings are enabled
         if self.is_embeddings:
-            self.vector_db = await get_vector_db(use_grpc=True)
-            self.vector_db_buffer = VectorDBBuffer(
-                self.vector_db, buffer_size=150, auto_flush=True
-            )
+            vector_db = await get_vector_db(use_grpc=True)
+            self.vector_db_buffer = VectorDBBuffer(vector_db, buffer_size=150)
+
+        if self.is_store:
+            database = await get_mongo_database()
+            dataset_db = await get_dataset_repository(database=database)
+            self.dataset_db_buffer: DatasetDBBuffer | None = DatasetDBBuffer(dataset_db)
 
         return self
 
@@ -144,7 +153,13 @@ class BerlinOpenDataDownloader:
             try:
                 await self.vector_db_buffer.flush()
             except Exception as e:
-                logger.error(f"Error flushing index buffer: {e}")
+                logger.error(f"Error flushing VECTOR buffer: {e}")
+
+        if self.dataset_db_buffer:
+            try:
+                await self.dataset_db_buffer.flush()
+            except Exception as e:
+                logger.error(f"Error flushing MONGO buffer: {e}")
 
         # Close HTTP session
         if self.session:
@@ -464,21 +479,21 @@ class BerlinOpenDataDownloader:
                     country="Germany",
                 )
 
-                async with aiofiles.open(metadata_file, "w", encoding="utf-8") as f:
-                    await f.write(
-                        json.dumps(
-                            package_meta,
-                            indent=2,
-                            ensure_ascii=False,
-                            cls=DatasetJSONEncoder,
-                        )
-                    )
+                content = json.dumps(
+                    package_meta,
+                    indent=2,
+                    ensure_ascii=False,
+                    cls=DatasetJSONEncoder,
+                )
+                save_file_with_task(metadata_file, content)
+
+                package_meta.content = await extract_data_content(dataset_dir)
 
                 if self.is_embeddings and self.vector_db_buffer:
-                    # Extract content asynchronously
-                    package_meta.content = await extract_data_content(dataset_dir)
-                    async with self.index_lock:
-                        await self.vector_db_buffer.add(package_meta)
+                    await self.vector_db_buffer.add(package_meta)
+
+                if self.is_store and self.dataset_db_buffer:
+                    await self.dataset_db_buffer.add(package_meta)
             else:
                 # Clean up empty dataset
                 safe_delete(dataset_dir, logger)

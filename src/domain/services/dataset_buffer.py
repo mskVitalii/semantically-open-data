@@ -27,7 +27,7 @@ class DatasetDBBuffer(AsyncBuffer[DatasetMetadataWithContent]):
         self.repository = repository
         self.buffer_size = buffer_size
         self._buffer: list[DatasetMetadataWithContent] = []
-        self._lock = asyncio.Lock()  # Async lock for thread safety
+        self._lock = asyncio.Lock()
         self._total_stored = 0
 
     # region Buffer logic

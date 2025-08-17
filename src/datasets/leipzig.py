@@ -464,9 +464,7 @@ class LeipzigCSVJSONDownloader:
             sorted_resources = json_resources + other_resources
 
             # Download resources with limited concurrency
-            download_semaphore = asyncio.Semaphore(
-                3
-            )  # Limit concurrent downloads per package
+            download_semaphore = asyncio.Semaphore(self.max_workers)
 
             async def download_with_semaphore(_resource):
                 async with download_semaphore:
@@ -555,7 +553,7 @@ Filter: CSV and JSON formats only
 """
         logger.debug(text_report)
 
-    async def download_csv_json_only(self, limit: Optional[int] = None):
+    async def download_all_datasets(self, limit: Optional[int] = None):
         """Main download method"""
         logger.info("Start Leipzig CSV & JSON Data Downloader")
         logger.debug(f"📁 Output directory: {self.output_dir.absolute()}")
@@ -671,7 +669,7 @@ async def async_main():
             connection_limit=args.connection_limit,
             is_embeddings=True,
         ) as downloader:
-            await downloader.download_csv_json_only(limit=args.limit)
+            await downloader.download_all_datasets(limit=args.limit)
         return 0
 
     except KeyboardInterrupt:

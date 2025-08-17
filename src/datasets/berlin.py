@@ -36,6 +36,8 @@ logger = get_prefixed_logger(__name__, "BERLIN")
 class BerlinOpenDataDownloader:
     """Optimized async class for downloading Berlin open data"""
 
+    # region INIT
+
     def __init__(
         self,
         output_dir: str = "berlin",
@@ -167,6 +169,9 @@ class BerlinOpenDataDownloader:
         if self.browser:
             await self.browser.close()
 
+    # endregion
+
+    # region PLAYWRIGHT
     async def get_or_create_browser(self):
         """Get or create a shared Playwright browser instance"""
         async with self.browser_lock:
@@ -183,70 +188,175 @@ class BerlinOpenDataDownloader:
                 )
             return self.browser
 
+    async def download_file_playwright(self, url: str, filepath: Path) -> bool:
+        """Optimized Playwright download with browser reuse"""
+        if filepath.exists() and filepath.stat().st_size > 0:
+            logger.debug(f"File already exists: {filepath.name}")
+            return True
+
+        browser = await self.get_or_create_browser()
+        context = await browser.new_context(
+            accept_downloads=True,
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            viewport=ViewportSize(1920, 1080),
+            java_script_enabled=True,
+        )
+
+        try:
+            page = await context.new_page()
+
+            # Set longer timeout for complex pages
+            page.set_default_timeout(10000)
+
+            async with page.expect_download(timeout=10000) as download_info:
+                await page.goto(url, wait_until="networkidle", timeout=10000)
+                # Wait a bit for JS to initialize
+                await page.wait_for_timeout(2000)
+
+                # Try to find and click download buttons
+                download_selectors = [
+                    "a[download]",
+                    'button:has-text("Download")',
+                    'a:has-text("Download")',
+                    'button:has-text("Herunterladen")',
+                    'a:has-text("Herunterladen")',
+                    ".download-button",
+                    '[class*="download"]',
+                ]
+
+                for selector in download_selectors:
+                    try:
+                        if await page.locator(selector).first.is_visible():
+                            await page.locator(selector).first.click()
+                            break
+                    except Exception:
+                        continue
+
+                download = await download_info.value
+
+            await download.save_as(filepath)
+            await context.close()
+
+            logger.debug(f"Downloaded via Playwright: {filepath.name}")
+            await self.update_stats("playwright_downloads")
+            return True
+
+        except Exception as e:
+            logger.error(f"Playwright error for {url}: {e}")
+            await context.close()
+            return False
+
+    # endregion
+
+    # region STATS
     async def update_stats(self, field: str, increment: int = 1):
         """Thread-safe statistics update"""
         async with self.stats_lock:
             self.stats[field] += increment
 
-    async def get_all_packages(self) -> List[str]:
-        """Get list of all package names with retry logic"""
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                logger.debug("Fetching list of all datasets...")
-                async with self.session.get(f"{self.api_url}/package_list") as response:
-                    response.raise_for_status()
-                    data = await response.json()
+    async def print_progress(self):
+        """Enhanced progress reporting"""
+        async with self.stats_lock:
+            processed = self.stats["datasets_processed"]
+            total = self.stats["datasets_found"]
+            files = self.stats["files_downloaded"]
+            errors = self.stats["errors"]
+            cache_hits = self.stats["cache_hits"]
+            playwright = self.stats["playwright_downloads"]
 
-                    if data.get("success"):
-                        packages = data.get("result", [])
-                        self.stats["datasets_found"] = len(packages)
-                        logger.info(f"Found {len(packages)} datasets")
-                        return packages
-                    else:
-                        logger.error(f"API error: {data.get('error')}")
-                        if attempt < max_retries - 1:
-                            await asyncio.sleep(2**attempt)  # Exponential backoff
-                        continue
+        if total > 0:
+            percentage = (processed / total) * 100
+            elapsed = (datetime.now() - self.stats["start_time"]).total_seconds()
+            rate = processed / elapsed if elapsed > 0 else 0
+            eta = (total - processed) / rate if rate > 0 else 0
 
-            except aiohttp.ClientError as e:
-                logger.error(
-                    f"Error fetching package list (attempt {attempt + 1}): {e}"
-                )
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2**attempt)
+            logger.info(
+                ""
+                f"Progress: {processed}/{total} ({percentage:.1f}%)\t"
+                f"Files: {files}\tErrors: {errors}\t"
+                f"Cache hits: {cache_hits}\tPlaywright: {playwright}\t"
+                f"Rate: {rate:.1f} datasets/s\tETA: {eta:.0f}s"
+            )
 
-        return []
+    async def progress_reporter(self):
+        while True:
+            await asyncio.sleep(5)  # More frequent updates
+            async with self.stats_lock:
+                if self.stats["datasets_processed"] >= self.stats["datasets_found"]:
+                    break
+            await self.print_progress()
 
-    async def get_package_details(self, package_name: str) -> Optional[Dict]:
-        """Get package details with caching"""
-        # Check cache first
-        async with self.cache_lock:
-            if package_name in self.package_cache:
-                await self.update_stats("cache_hits")
-                return self.package_cache[package_name]
+    # endregion
 
-        try:
-            async with self.session.get(
-                f"{self.api_url}/package_show", params={"id": package_name}
-            ) as response:
-                response.raise_for_status()
-                data = await response.json()
+    @staticmethod
+    def get_file_extension(url: str, format_hint: str = None) -> str:
+        """Optimized file extension detection"""
+        # Quick lookup table
+        extension_map = {
+            ".csv": ".csv",
+            ".json": ".json",
+            ".xml": ".xml",
+            ".xlsx": ".xlsx",
+            ".xls": ".xls",
+            ".pdf": ".pdf",
+            ".txt": ".txt",
+        }
 
-                if data.get("success"):
-                    result = data.get("result")
-                    # Cache the result
-                    async with self.cache_lock:
-                        self.package_cache[package_name] = result
-                    return result
-                else:
-                    logger.warning(f"Package not found or error: {package_name}")
-                    return None
+        url_lower = url.lower()
+        for ext in extension_map:
+            if url_lower.endswith(ext):
+                return ext
 
-        except aiohttp.ClientError as e:
-            logger.error(f"Error fetching package details for {package_name}: {e}")
-            return None
+        # Format hint lookup
+        if format_hint:
+            format_lower = format_hint.lower()
+            format_extension_map = {
+                "csv": ".csv",
+                "json": ".json",
+                "xml": ".xml",
+                "xlsx": ".xlsx",
+                "excel": ".xlsx",
+                "xls": ".xls",
+                "pdf": ".pdf",
+                "txt": ".txt",
+                "text": ".txt",
+            }
 
+            for fmt, ext in format_extension_map.items():
+                if fmt in format_lower:
+                    return ext
+
+        return ""
+
+    @staticmethod
+    def should_skip_resource(resource: Dict) -> bool:
+        """Optimized resource skip check"""
+        url = resource.get("url", "").lower()
+        format_hint = resource.get("format", "").lower()
+
+        # Check for allowed formats
+        allowed_indicators = ["csv", "json", "geojson"]
+        if any(
+            indicator in format_hint or url.endswith(f".{indicator}")
+            for indicator in allowed_indicators
+        ):
+            return False
+
+        # Quick checks
+        skip_indicators = ["atom", "wms", "wfs", "wmts", "sparql", "api"]
+        if any(
+            indicator in url or indicator in format_hint
+            for indicator in skip_indicators
+        ):
+            return True
+
+        # Check against skip formats
+        if format_hint in skip_formats:
+            return True
+
+        return True
+
+    # 5.
     async def download_file(self, url: str, filepath: Path) -> bool:
         """Optimized file download with streaming"""
         # Check if file already exists
@@ -319,64 +429,37 @@ class BerlinOpenDataDownloader:
                 self.playwright_domains.add(domain)
             return await self.download_file_playwright(url, filepath)
 
-    async def download_file_playwright(self, url: str, filepath: Path) -> bool:
-        """Optimized Playwright download with browser reuse"""
-        if filepath.exists() and filepath.stat().st_size > 0:
-            logger.debug(f"File already exists: {filepath.name}")
-            return True
-
-        browser = await self.get_or_create_browser()
-        context = await browser.new_context(
-            accept_downloads=True,
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            viewport=ViewportSize(1920, 1080),
-            java_script_enabled=True,
-        )
+    # 4.
+    async def get_package_details(self, package_name: str) -> Optional[Dict]:
+        """Get package details with caching"""
+        # Check cache first
+        async with self.cache_lock:
+            if package_name in self.package_cache:
+                await self.update_stats("cache_hits")
+                return self.package_cache[package_name]
 
         try:
-            page = await context.new_page()
+            async with self.session.get(
+                f"{self.api_url}/package_show", params={"id": package_name}
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
 
-            # Set longer timeout for complex pages
-            page.set_default_timeout(10000)
+                if data.get("success"):
+                    result = data.get("result")
+                    # Cache the result
+                    async with self.cache_lock:
+                        self.package_cache[package_name] = result
+                    return result
+                else:
+                    logger.warning(f"Package not found or error: {package_name}")
+                    return None
 
-            async with page.expect_download(timeout=10000) as download_info:
-                await page.goto(url, wait_until="networkidle", timeout=10000)
-                # Wait a bit for JS to initialize
-                await page.wait_for_timeout(2000)
+        except aiohttp.ClientError as e:
+            logger.error(f"Error fetching package details for {package_name}: {e}")
+            return None
 
-                # Try to find and click download buttons
-                download_selectors = [
-                    "a[download]",
-                    'button:has-text("Download")',
-                    'a:has-text("Download")',
-                    'button:has-text("Herunterladen")',
-                    'a:has-text("Herunterladen")',
-                    ".download-button",
-                    '[class*="download"]',
-                ]
-
-                for selector in download_selectors:
-                    try:
-                        if await page.locator(selector).first.is_visible():
-                            await page.locator(selector).first.click()
-                            break
-                    except Exception:
-                        continue
-
-                download = await download_info.value
-
-            await download.save_as(filepath)
-            await context.close()
-
-            logger.debug(f"Downloaded via Playwright: {filepath.name}")
-            await self.update_stats("playwright_downloads")
-            return True
-
-        except Exception as e:
-            logger.error(f"Playwright error for {url}: {e}")
-            await context.close()
-            return False
-
+    # 3.
     async def process_dataset(self, package_name: str) -> bool:
         """Process dataset with optimized resource handling"""
         # Minimal delay to respect server
@@ -501,98 +584,38 @@ class BerlinOpenDataDownloader:
             await self.update_stats("errors")
             return False
 
-    @staticmethod
-    def get_file_extension(url: str, format_hint: str = None) -> str:
-        """Optimized file extension detection"""
-        # Quick lookup table
-        extension_map = {
-            ".csv": ".csv",
-            ".json": ".json",
-            ".xml": ".xml",
-            ".xlsx": ".xlsx",
-            ".xls": ".xls",
-            ".pdf": ".pdf",
-            ".txt": ".txt",
-        }
+    # 2.
+    async def get_all_packages(self) -> List[str]:
+        """Get list of all package names with retry logic"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                logger.debug("Fetching list of all datasets...")
+                async with self.session.get(f"{self.api_url}/package_list") as response:
+                    response.raise_for_status()
+                    data = await response.json()
 
-        url_lower = url.lower()
-        for ext in extension_map:
-            if url_lower.endswith(ext):
-                return ext
+                    if data.get("success"):
+                        packages = data.get("result", [])
+                        self.stats["datasets_found"] = len(packages)
+                        logger.info(f"Found {len(packages)} datasets")
+                        return packages
+                    else:
+                        logger.error(f"API error: {data.get('error')}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(2**attempt)  # Exponential backoff
+                        continue
 
-        # Format hint lookup
-        if format_hint:
-            format_lower = format_hint.lower()
-            format_extension_map = {
-                "csv": ".csv",
-                "json": ".json",
-                "xml": ".xml",
-                "xlsx": ".xlsx",
-                "excel": ".xlsx",
-                "xls": ".xls",
-                "pdf": ".pdf",
-                "txt": ".txt",
-                "text": ".txt",
-            }
-
-            for fmt, ext in format_extension_map.items():
-                if fmt in format_lower:
-                    return ext
-
-        return ""
-
-    @staticmethod
-    def should_skip_resource(resource: Dict) -> bool:
-        """Optimized resource skip check"""
-        url = resource.get("url", "").lower()
-        format_hint = resource.get("format", "").lower()
-
-        # Check for allowed formats
-        allowed_indicators = ["csv", "json", "geojson"]
-        if any(
-            indicator in format_hint or url.endswith(f".{indicator}")
-            for indicator in allowed_indicators
-        ):
-            return False
-
-        # Quick checks
-        skip_indicators = ["atom", "wms", "wfs", "wmts", "sparql", "api"]
-        if any(
-            indicator in url or indicator in format_hint
-            for indicator in skip_indicators
-        ):
-            return True
-
-        # Check against skip formats
-        if format_hint in skip_formats:
-            return True
-
-        return True
-
-    async def print_progress(self):
-        """Enhanced progress reporting"""
-        async with self.stats_lock:
-            processed = self.stats["datasets_processed"]
-            total = self.stats["datasets_found"]
-            files = self.stats["files_downloaded"]
-            errors = self.stats["errors"]
-            cache_hits = self.stats["cache_hits"]
-            playwright = self.stats["playwright_downloads"]
-
-            if total > 0:
-                percentage = (processed / total) * 100
-                elapsed = (datetime.now() - self.stats["start_time"]).total_seconds()
-                rate = processed / elapsed if elapsed > 0 else 0
-                eta = (total - processed) / rate if rate > 0 else 0
-
-                logger.info(
-                    ""
-                    f"Progress: {processed}/{total} ({percentage:.1f}%)\t"
-                    f"Files: {files}\tErrors: {errors}\t"
-                    f"Cache hits: {cache_hits}\tPlaywright: {playwright}\t"
-                    f"Rate: {rate:.1f} datasets/s\tETA: {eta:.0f}s"
+            except aiohttp.ClientError as e:
+                logger.error(
+                    f"Error fetching package list (attempt {attempt + 1}): {e}"
                 )
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2**attempt)
 
+        return []
+
+    # 1.
     async def download_all_datasets(self):
         """Optimized download with batching and better concurrency"""
         logger.info("Starting optimized Berlin Open Data download")
@@ -608,15 +631,7 @@ class BerlinOpenDataDownloader:
         )
 
         # Progress reporting task
-        async def progress_reporter():
-            while True:
-                await asyncio.sleep(5)  # More frequent updates
-                async with self.stats_lock:
-                    if self.stats["datasets_processed"] >= self.stats["datasets_found"]:
-                        break
-                await self.print_progress()
-
-        progress_task = asyncio.create_task(progress_reporter())
+        progress_task = asyncio.create_task(self.progress_reporter())
 
         # Process in batches to avoid overwhelming memory
         for i in range(0, len(packages), self.batch_size):
@@ -677,6 +692,7 @@ class BerlinOpenDataDownloader:
         logger.debug(f"Data saved to: {self.output_dir.absolute()}")
 
 
+# region MAIN
 async def main():
     """Main async function with optimized settings"""
     import argparse
@@ -745,3 +761,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+# endregion

@@ -54,7 +54,6 @@ async def download_chemnitz():
         connection_limit=100,
         is_embeddings=True,
         is_store=True,
-        max_retries=1,
     ) as downloader:
         await downloader.download_all_datasets()
 
@@ -77,7 +76,7 @@ async def download_leipzig():
         is_embeddings=True,
         is_store=True,
     ) as downloader:
-        await downloader.download_csv_json_only(limit=None)
+        await downloader.download_all_datasets()
 
     elapsed = time.perf_counter() - start_time
     logger.info(f"✅ Leipzig download completed in {elapsed:.2f} seconds!")
@@ -95,7 +94,6 @@ async def download_dresden():
         delay=0.05,
         batch_size=50,
         connection_limit=100,
-        max_retries=1,
         is_embeddings=True,
         is_store=True,
     ) as downloader:

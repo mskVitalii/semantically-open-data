@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import sys
 from datetime import datetime
@@ -12,7 +11,6 @@ import aiofiles
 from playwright.async_api import async_playwright, ViewportSize
 
 from src.datasets.datasets_metadata import (
-    DatasetJSONEncoder,
     DatasetMetadataWithContent,
 )
 from src.domain.repositories.dataset_repository import get_dataset_repository
@@ -278,7 +276,7 @@ class BerlinOpenDataDownloader:
 
                 if "html" in content_type:
                     # Read first chunk to check if it's actually HTML
-                    first_chunk = await response.content.read(1024)
+                    first_chunk = await response.fields.read(1024)
                     if b"<!DOCTYPE" in first_chunk or b"<html" in first_chunk:
                         logger.debug(f"HTML content detected, trying Playwright: {url}")
                         async with self.playwright_lock:
@@ -289,14 +287,14 @@ class BerlinOpenDataDownloader:
                     async with aiofiles.open(temp_filepath, "wb") as f:
                         await f.write(first_chunk)
                         # Continue with rest of file
-                        async for chunk in response.content.iter_chunked(
+                        async for chunk in response.fields.iter_chunked(
                             65536
                         ):  # Larger chunks
                             await f.write(chunk)
                 else:
                     # Normal download with larger buffer
                     async with aiofiles.open(temp_filepath, "wb") as f:
-                        async for chunk in response.content.iter_chunked(65536):
+                        async for chunk in response.fields.iter_chunked(65536):
                             await f.write(chunk)
 
             # Verify file is not empty
@@ -479,15 +477,10 @@ class BerlinOpenDataDownloader:
                     country="Germany",
                 )
 
-                content = json.dumps(
-                    package_meta,
-                    indent=2,
-                    ensure_ascii=False,
-                    cls=DatasetJSONEncoder,
-                )
+                content = package_meta.to_json()
                 save_file_with_task(metadata_file, content)
 
-                package_meta.content = await extract_data_content(dataset_dir)
+                package_meta.fields = await extract_data_content(dataset_dir)
 
                 if self.is_embeddings and self.vector_db_buffer:
                     await self.vector_db_buffer.add(package_meta)

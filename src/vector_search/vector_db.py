@@ -109,8 +109,7 @@ class VectorDB:
         except Exception as e:
             logger.error("exception!", exc_info=e)
             return
-        # Generate embeddings in batches (assuming embedder is sync for now)
-        # If you have an async embedder, replace this with await
+        # Generate embeddings in batches
         embeddings = await embed_batch(texts)
 
         # Prepare points for Qdrant

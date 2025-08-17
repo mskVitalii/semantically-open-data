@@ -73,22 +73,31 @@ class DatasetMetadata:
 class DatasetMetadataWithContent(DatasetMetadata):
     """Dataset metadata with additional content field"""
 
-    content: Optional[str] = None
+    fields: Optional[str] = None
 
     def to_searchable_text(self) -> str:
         """Combine title, description, and content for embedding"""
         base_text = super().to_searchable_text()
 
         # If you want to include content in the searchable text
-        if self.content:
-            return f"{base_text}\n{self.content}"
+        if self.fields:
+            return f"{base_text}\n{self.fields}"
         return base_text
 
     def to_payload(self) -> Dict[str, Any]:
         """Convert to Qdrant payload including content"""
         payload = super().to_payload()
-        payload["content"] = self.content
+        payload["content"] = self.fields
         return payload
+
+    def to_json(self) -> str:
+        """Convert to JSON string"""
+        return json.dumps(
+            self,
+            indent=2,
+            ensure_ascii=False,
+            cls=DatasetJSONEncoder,
+        )
 
 
 class DatasetJSONEncoder(json.JSONEncoder):
@@ -100,18 +109,3 @@ class DatasetJSONEncoder(json.JSONEncoder):
         elif isinstance(obj, datetime):
             return obj.isoformat()
         return super().default(obj)
-
-
-# if __name__ == "__main__":
-#     sample_dataset = DatasetMetadata(
-#         id="4db3895e-92a9-4bb7-bb33-f792178d331f",
-#         title="Landtagswahl 2024: Wahlbezirksergebnisse",
-#         description="Der vorliegende Datensatz präsentiert die Ergebnisse der Wahl zum Sächsischen Landtag 2024 in den Leipziger Wahlbezirken.",
-#         organization="Amt für Statistik und Wahlen",
-#         metadata_created="2024-09-18T09:50:49.841530",
-#         metadata_modified="2024-11-15T14:04:14.392074",
-#         city="Leipzig",
-#         state="Saxony",
-#         country="Germany",
-#     )
-#     print(sample_dataset.to_searchable_text())

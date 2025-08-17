@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import sys
 import os
@@ -13,7 +12,6 @@ import aiofiles
 from aiohttp import ClientTimeout, TCPConnector
 
 from src.datasets.datasets_metadata import (
-    DatasetJSONEncoder,
     DatasetMetadataWithContent,
 )
 from src.domain.repositories.dataset_repository import get_dataset_repository
@@ -378,7 +376,7 @@ class LeipzigCSVJSONDownloader:
 
                         # Download with streaming
                         async with aiofiles.open(temp_path, "wb") as f:
-                            async for chunk in response.content.iter_chunked(
+                            async for chunk in response.fields.iter_chunked(
                                 65536
                             ):  # 64KB chunks
                                 await f.write(chunk)
@@ -486,15 +484,10 @@ class LeipzigCSVJSONDownloader:
 
             if success:
                 # Save metadata
-                content = json.dumps(
-                    package_meta,
-                    ensure_ascii=False,
-                    indent=2,
-                    cls=DatasetJSONEncoder,
-                )
+                content = package_meta.to_json()
                 save_file_with_task(metadata_file, content)
 
-                package_meta.content = await extract_data_content(dataset_dir)
+                package_meta.fields = await extract_data_content(dataset_dir)
 
                 if self.is_embeddings and self.vector_db_buffer:
                     await self.vector_db_buffer.add(package_meta)

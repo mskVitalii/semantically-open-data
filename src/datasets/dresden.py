@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import sys
 from datetime import datetime
@@ -11,7 +10,6 @@ import aiofiles
 from aiohttp import ClientTimeout, TCPConnector
 
 from src.datasets.datasets_metadata import (
-    DatasetJSONEncoder,
     DatasetMetadataWithContent,
 )
 from src.domain.repositories.dataset_repository import get_dataset_repository
@@ -460,7 +458,7 @@ class DresdenOpenDataDownloader:
 
                     # Download with streaming
                     async with aiofiles.open(temp_path, "wb") as f:
-                        async for chunk in response.content.iter_chunked(
+                        async for chunk in response.fields.iter_chunked(
                             65536
                         ):  # 64KB chunks
                             await f.write(chunk)
@@ -598,12 +596,7 @@ class DresdenOpenDataDownloader:
             logger.debug(f"No download files found for dataset: {title}")
             # Still save metadata even if no downloads
             metadata_file = dataset_dir / "metadata.json"
-            content = json.dumps(
-                package_meta,
-                indent=2,
-                ensure_ascii=False,
-                cls=DatasetJSONEncoder,
-            )
+            content = package_meta.to_json()
             save_file_with_task(metadata_file, content)
             await self.update_stats("datasets_processed")
             return True
@@ -618,11 +611,11 @@ class DresdenOpenDataDownloader:
             3
         )  # Limit concurrent downloads per dataset
 
-        async def download_with_semaphore(download_info):
+        async def download_with_semaphore(_download_info):
             async with download_semaphore:
-                url = download_info["url"]
-                file_title = download_info.get("title", "file")
-                extension = download_info.get("extension", "")
+                url = _download_info["url"]
+                file_title = _download_info.get("title", "file")
+                extension = _download_info.get("extension", "")
                 filename = sanitize_filename(f"{file_title}{extension}")
                 return await self.download_file(url, filename, dataset_dir)
 
@@ -639,15 +632,10 @@ class DresdenOpenDataDownloader:
         if success:
             # Save metadata
             metadata_file = dataset_dir / "metadata.json"
-            content = json.dumps(
-                package_meta,
-                indent=2,
-                ensure_ascii=False,
-                cls=DatasetJSONEncoder,
-            )
+            content = package_meta.to_json()
             save_file_with_task(metadata_file, content)
 
-            package_meta.content = await extract_data_content(dataset_dir)
+            package_meta.fields = await extract_data_content(dataset_dir)
 
             if self.is_embeddings and self.vector_db_buffer:
                 await self.vector_db_buffer.add(package_meta)

@@ -14,7 +14,6 @@ from aiohttp import ClientTimeout, TCPConnector
 
 from src.datasets.datasets_metadata import (
     DatasetMetadataWithContent,
-    DatasetJSONEncoder,
 )
 from src.domain.repositories.dataset_repository import get_dataset_repository
 from src.domain.services.dataset_buffer import DatasetDBBuffer
@@ -386,17 +385,12 @@ class ChemnitzDataDownloader:
                 )
 
                 # Save metadata
-                content = json.dumps(
-                    package_meta,
-                    indent=2,
-                    ensure_ascii=False,
-                    cls=DatasetJSONEncoder,
-                )
+                content = package_meta.to_json()
                 save_file_with_task(metadata_file, content)
 
                 await self.update_stats("files_downloaded")
 
-                package_meta.content = await extract_data_content(dataset_dir)
+                package_meta.fields = await extract_data_content(dataset_dir)
 
                 if self.is_embeddings and self.vector_db_buffer:
                     await self.vector_db_buffer.add(package_meta)

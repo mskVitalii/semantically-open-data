@@ -30,6 +30,8 @@ logger = get_prefixed_logger(__name__, "LEIPZIG")
 class LeipzigCSVJSONDownloader:
     """Optimized async class for downloading Leipzig CSV/JSON data"""
 
+    # region INIT
+
     def __init__(
         self,
         output_dir: str = "leipzig",
@@ -161,150 +163,65 @@ class LeipzigCSVJSONDownloader:
             except Exception as e:
                 logger.error(f"Error flushing MONGO buffer: {e}")
 
+    # endregion
+
+    # region STATS
+    async def print_progress(self, current: int, total: int):
+        """Print progress information"""
+        async with self.stats_lock:
+            percentage = (current / total * 100) if total > 0 else 0
+            elapsed = (datetime.now() - self.stats["start_time"]).total_seconds()
+            rate = current / elapsed if elapsed > 0 else 0
+            eta = (total - current) / rate if rate > 0 else 0
+
+            logger.debug(
+                f"Progress: {current}/{total} ({percentage:.1f}%) - "
+                f"Downloads: {self.stats['successful_downloads']} - "
+                f"Errors: {self.stats['failed_downloads']} - "
+                f"Cache hits: {self.stats['cache_hits']} - "
+                f"Rate: {rate:.1f} packages/s - ETA: {eta:.0f}s"
+            )
+
+    async def create_summary_report(self):
+        """Create and display summary report"""
+        duration = datetime.now() - self.stats["start_time"]
+
+        text_report = f"""
+Leipzig Open Data CSV & JSON Download Summary
+============================================
+
+Completed: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+Duration: {duration}
+Filter: CSV and JSON formats only
+
+📊 Statistics:
+- Total packages checked: {self.stats["total_packages_checked"]}
+- Packages with CSV/JSON: {self.stats["packages_with_target_formats"]}
+- Target resources found: {self.stats["total_target_resources"]}
+- Successfully downloaded: {self.stats["successful_downloads"]}
+- Download errors: {self.stats["failed_downloads"]}
+- Cache hits: {self.stats["cache_hits"]}
+- Retries: {self.stats["retries"]}
+
+📄 By format:
+- CSV files: {self.stats["csv_count"]}
+- JSON files: {self.stats["json_count"]}
+- GeoJSON files: {self.stats["geojson_count"]}
+
+📁 Data saved to: {self.output_dir.absolute()}
+
+💡 Each dataset contains:
+- Data files (CSV/JSON/GeoJSON)
+- metadata.json - dataset metadata
+"""
+        logger.debug(text_report)
+
     async def update_stats(self, field: str, increment: int = 1):
         """Thread-safe statistics update"""
         async with self.stats_lock:
             self.stats[field] += increment
 
-    async def get_package_list(self) -> list[str]:
-        """Get list of all package IDs with retry logic"""
-        for attempt in range(self.max_retries):
-            try:
-                logger.debug("🔍 Fetching package list...")
-                async with self.session.get(f"{self.api_url}/package_list") as response:
-                    response.raise_for_status()
-                    data = await response.json()
-
-                    if not data["success"]:
-                        logger.error(f"API error: {data.get('error')}")
-                        return []
-
-                    packages = data["result"]
-                    logger.info(f"📊 Total packages found: {len(packages)}")
-                    return packages
-
-            except Exception as e:
-                if attempt < self.max_retries - 1:
-                    await self.update_stats("retries")
-                    await asyncio.sleep(2**attempt)  # Exponential backoff
-                else:
-                    logger.error(f"❌ Error fetching package list: {e}")
-                    return []
-        return []
-
-    async def get_package_details(self, package_id: str) -> Optional[Dict]:
-        """Get package details with caching and retry logic"""
-        # Check cache first
-        async with self.cache_lock:
-            if package_id in self.package_cache:
-                await self.update_stats("cache_hits")
-                return self.package_cache[package_id]
-
-        await asyncio.sleep(self.delay)  # Rate limiting
-
-        for attempt in range(self.max_retries):
-            try:
-                async with self.session.get(
-                    f"{self.api_url}/package_show", params={"id": package_id}
-                ) as response:
-                    response.raise_for_status()
-                    data = await response.json()
-
-                    if data["success"]:
-                        result = data["result"]
-                        # Cache the result
-                        async with self.cache_lock:
-                            self.package_cache[package_id] = result
-                        return result
-                    return None
-
-            except Exception as e:
-                if attempt < self.max_retries - 1:
-                    await self.update_stats("retries")
-                    await asyncio.sleep(2**attempt)
-                else:
-                    logger.warning(
-                        f"Failed to get package details for {package_id}: {e}"
-                    )
-                    return None
-        return None
-
-    async def analyze_package(self, package_id: str) -> Optional[Dict]:
-        """Analyze a package and return metadata if it has target formats"""
-        package_data = await self.get_package_details(package_id)
-        if not package_data:
-            return None
-
-        await self.update_stats("total_packages_checked")
-
-        # Check for target formats
-        target_resources = []
-        for resource in package_data.get("resources", []):
-            resource_format = resource.get("format", "").lower()
-            if resource_format in self.target_formats:
-                target_resources.append(resource)
-
-        if target_resources:
-            await self.update_stats("packages_with_target_formats")
-            await self.update_stats("total_target_resources", len(target_resources))
-
-            return {
-                "package_id": package_id,
-                "package_data": package_data,
-                "target_resources": target_resources,
-            }
-
-        return None
-
-    async def get_packages_with_target_formats(self) -> List[Dict]:
-        """Get all packages that contain CSV/JSON/GeoJSON resources"""
-        try:
-            # Get all package IDs
-            all_packages = await self.get_package_list()
-            if not all_packages:
-                return []
-
-            logger.debug("🔎 Analyzing packages for CSV/JSON/GeoJSON resources...")
-
-            # Process packages in batches
-            target_packages = []
-
-            for i in range(0, len(all_packages), self.batch_size):
-                batch = all_packages[i : i + self.batch_size]
-
-                # Create semaphore for this batch
-                semaphore = asyncio.Semaphore(self.max_workers)
-
-                async def analyze_with_semaphore(package_id: str):
-                    async with semaphore:
-                        return await self.analyze_package(package_id)
-
-                # Analyze batch
-                tasks = [analyze_with_semaphore(pkg_id) for pkg_id in batch]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-
-                # Collect valid results
-                for result in results:
-                    if isinstance(result, dict) and result:
-                        target_packages.append(result)
-
-                # Progress update
-                checked = min(i + self.batch_size, len(all_packages))
-                logger.debug(f"\tChecked {checked}/{len(all_packages)} packages...")
-
-            logger.info(
-                f"✅ Found {len(target_packages)} packages with CSV/JSON/GeoJSON"
-            )
-            async with self.stats_lock:
-                logger.info(
-                    f"📋 Total target resources: {self.stats['total_target_resources']}"
-                )
-
-            return target_packages
-
-        except Exception as e:
-            logger.error(f"❌ Error searching datasets: {e}")
-            return []
+    # endregion
 
     @staticmethod
     def get_file_extension(url: str, format_hint: str) -> str:
@@ -323,6 +240,7 @@ class LeipzigCSVJSONDownloader:
 
         return ".data"
 
+    # 7.
     async def download_resource(self, resource: Dict, dataset_dir: Path) -> bool:
         """Download a single resource with retry logic"""
         try:
@@ -411,6 +329,7 @@ class LeipzigCSVJSONDownloader:
             logger.error(f"\t❌ Unexpected error: {e}")
             return False
 
+    # 6.
     async def download_package(self, metadata: Dict) -> bool:
         """Download all resources for a package"""
         try:
@@ -463,16 +382,16 @@ class LeipzigCSVJSONDownloader:
             ]
             sorted_resources = json_resources + other_resources
 
-            # Download resources with limited concurrency
             download_semaphore = asyncio.Semaphore(self.max_workers)
 
             async def download_with_semaphore(_resource):
                 async with download_semaphore:
                     return await self.download_resource(_resource, dataset_dir)
 
-            # Try to download at least one resource
+            # Try to download a resource
             success = False
             for resource in sorted_resources:
+                # TODO: make checks here - optimization
                 if await download_with_semaphore(resource):
                     success = True
                     await self.update_stats("successful_downloads")
@@ -486,6 +405,7 @@ class LeipzigCSVJSONDownloader:
                 save_file_with_task(metadata_file, content)
 
                 package_meta.fields = await extract_data_content(dataset_dir)
+                # TODO: add dataset to dataset_db_buffer
 
                 if self.is_embeddings and self.vector_db_buffer:
                     await self.vector_db_buffer.add(package_meta)
@@ -503,56 +423,151 @@ class LeipzigCSVJSONDownloader:
             await self.update_stats("failed_downloads")
             return False
 
-    async def print_progress(self, current: int, total: int):
-        """Print progress information"""
-        async with self.stats_lock:
-            percentage = (current / total * 100) if total > 0 else 0
-            elapsed = (datetime.now() - self.stats["start_time"]).total_seconds()
-            rate = current / elapsed if elapsed > 0 else 0
-            eta = (total - current) / rate if rate > 0 else 0
+    # 5.
+    async def get_package_details(self, package_id: str) -> Optional[Dict]:
+        """Get package details with caching and retry logic"""
+        # Check cache first
+        async with self.cache_lock:
+            if package_id in self.package_cache:
+                await self.update_stats("cache_hits")
+                return self.package_cache[package_id]
 
-            logger.debug(
-                f"Progress: {current}/{total} ({percentage:.1f}%) - "
-                f"Downloads: {self.stats['successful_downloads']} - "
-                f"Errors: {self.stats['failed_downloads']} - "
-                f"Cache hits: {self.stats['cache_hits']} - "
-                f"Rate: {rate:.1f} packages/s - ETA: {eta:.0f}s"
+        await asyncio.sleep(self.delay)  # Rate limiting
+
+        for attempt in range(self.max_retries):
+            try:
+                async with self.session.get(
+                    f"{self.api_url}/package_show", params={"id": package_id}
+                ) as response:
+                    response.raise_for_status()
+                    data = await response.json()
+
+                    if data["success"]:
+                        result = data["result"]
+                        # Cache the result
+                        async with self.cache_lock:
+                            self.package_cache[package_id] = result
+                        return result
+                    return None
+
+            except Exception as e:
+                if attempt < self.max_retries - 1:
+                    await self.update_stats("retries")
+                    await asyncio.sleep(2**attempt)
+                else:
+                    logger.warning(
+                        f"Failed to get package details for {package_id}: {e}"
+                    )
+                    return None
+        return None
+
+    # 4.
+    async def analyze_package(self, package_id: str) -> Optional[Dict]:
+        """Analyze a package and return metadata if it has target formats"""
+        package_data = await self.get_package_details(package_id)
+        if not package_data:
+            return None
+
+        await self.update_stats("total_packages_checked")
+
+        # Check for target formats
+        target_resources = []
+        for resource in package_data.get("resources", []):
+            resource_format = resource.get("format", "").lower()
+            if resource_format in self.target_formats:
+                target_resources.append(resource)
+
+        if target_resources:
+            await self.update_stats("packages_with_target_formats")
+            await self.update_stats("total_target_resources", len(target_resources))
+
+            return {
+                "package_id": package_id,
+                "package_data": package_data,
+                "target_resources": target_resources,
+            }
+
+        return None
+
+    # 3.
+    async def get_package_list(self) -> list[str]:
+        """Get list of all package IDs with retry logic"""
+        for attempt in range(self.max_retries):
+            try:
+                logger.debug("🔍 Fetching package list...")
+                async with self.session.get(f"{self.api_url}/package_list") as response:
+                    response.raise_for_status()
+                    data = await response.json()
+
+                    if not data["success"]:
+                        logger.error(f"API error: {data.get('error')}")
+                        return []
+
+                    packages = data["result"]
+                    logger.info(f"📊 Total packages found: {len(packages)}")
+                    return packages
+
+            except Exception as e:
+                if attempt < self.max_retries - 1:
+                    await self.update_stats("retries")
+                    await asyncio.sleep(2**attempt)  # Exponential backoff
+                else:
+                    logger.error(f"❌ Error fetching package list: {e}")
+                    return []
+        return []
+
+    # 2.
+    async def get_packages_with_target_formats(self) -> List[Dict]:
+        """Get all packages that contain CSV/JSON/GeoJSON resources"""
+        try:
+            # Get all package IDs
+            all_packages = await self.get_package_list()
+            if not all_packages:
+                return []
+
+            logger.debug("🔎 Analyzing packages for CSV/JSON/GeoJSON resources...")
+
+            # Process packages in batches
+            target_packages = []
+
+            for i in range(0, len(all_packages), self.batch_size):
+                batch = all_packages[i : i + self.batch_size]
+
+                # Create semaphore for this batch
+                semaphore = asyncio.Semaphore(self.max_workers)
+
+                async def analyze_with_semaphore(package_id: str):
+                    async with semaphore:
+                        return await self.analyze_package(package_id)
+
+                # Analyze batch
+                tasks = [analyze_with_semaphore(pkg_id) for pkg_id in batch]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Collect valid results
+                for result in results:
+                    if isinstance(result, dict) and result:
+                        target_packages.append(result)
+
+                # Progress update
+                checked = min(i + self.batch_size, len(all_packages))
+                logger.debug(f"\tChecked {checked}/{len(all_packages)} packages...")
+
+            logger.info(
+                f"✅ Found {len(target_packages)} packages with CSV/JSON/GeoJSON"
             )
+            async with self.stats_lock:
+                logger.info(
+                    f"📋 Total target resources: {self.stats['total_target_resources']}"
+                )
 
-    async def create_summary_report(self):
-        """Create and display summary report"""
-        duration = datetime.now() - self.stats["start_time"]
+            return target_packages
 
-        text_report = f"""
-Leipzig Open Data CSV & JSON Download Summary
-============================================
+        except Exception as e:
+            logger.error(f"❌ Error searching datasets: {e}")
+            return []
 
-Completed: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-Duration: {duration}
-Filter: CSV and JSON formats only
-
-📊 Statistics:
-- Total packages checked: {self.stats["total_packages_checked"]}
-- Packages with CSV/JSON: {self.stats["packages_with_target_formats"]}
-- Target resources found: {self.stats["total_target_resources"]}
-- Successfully downloaded: {self.stats["successful_downloads"]}
-- Download errors: {self.stats["failed_downloads"]}
-- Cache hits: {self.stats["cache_hits"]}
-- Retries: {self.stats["retries"]}
-
-📄 By format:
-- CSV files: {self.stats["csv_count"]}
-- JSON files: {self.stats["json_count"]}
-- GeoJSON files: {self.stats["geojson_count"]}
-
-📁 Data saved to: {self.output_dir.absolute()}
-
-💡 Each dataset contains:
-- Data files (CSV/JSON/GeoJSON)
-- metadata.json - dataset metadata
-"""
-        logger.debug(text_report)
-
+    # 1.
     async def download_all_datasets(self, limit: Optional[int] = None):
         """Main download method"""
         logger.info("Start Leipzig CSV & JSON Data Downloader")
@@ -578,7 +593,6 @@ Filter: CSV and JSON formats only
         for i in range(0, len(target_packages), self.batch_size):
             batch = target_packages[i : i + self.batch_size]
 
-            # Create semaphore for this batch
             semaphore = asyncio.Semaphore(self.max_workers)
 
             async def process_with_semaphore(metadata: Dict):
@@ -604,6 +618,7 @@ Filter: CSV and JSON formats only
         await self.create_summary_report()
 
 
+# region MAIN
 async def async_main():
     """Async main function"""
     import argparse
@@ -692,3 +707,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+# endregion

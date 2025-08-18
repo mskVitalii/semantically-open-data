@@ -34,6 +34,8 @@ logger = get_prefixed_logger(__name__, "CHEMNITZ")
 class ChemnitzDataDownloader:
     """Optimized async class for downloading Chemnitz open data"""
 
+    # region INIT
+
     def __init__(
         self,
         csv_file_path: str,
@@ -160,29 +162,32 @@ class ChemnitzDataDownloader:
         if self.session:
             await self.session.close()
 
-    async def load_datasets_metadata_from_csv(self) -> List[Dict[str, str]]:
-        """Load dataset metadata from CSV file asynchronously"""
-        datasets = []
-        async with aiofiles.open(self.csv_file_path, "r", encoding="utf-8") as file:
-            content = await file.read()
+    # endregion
 
-        # Parse CSV content
-        csv_file = io.StringIO(content)
-        reader = csv.DictReader(csv_file)
+    # region STATS
+    async def print_progress(self):
+        """Enhanced progress reporting"""
+        async with self.stats_lock:
+            processed = self.stats["datasets_processed"]
+            total = self.stats["datasets_found"]
+            files = self.stats["files_downloaded"]
+            layers = self.stats["layers_downloaded"]
+            errors = self.stats["errors"]
+            cache_hits = self.stats["cache_hits"]
+            retries = self.stats["retries"]
 
-        for row in reader:
-            if row.get("url") and row.get("url").strip():
-                datasets.append(
-                    {
-                        "title": row.get("title", "").strip(),
-                        "url": row.get("url").strip(),
-                        "type": row.get("type", "").strip(),
-                        "description": row.get("description", "").strip(),
-                    }
+            if total > 0:
+                percentage = (processed / total) * 100
+                elapsed = (datetime.now() - self.stats["start_time"]).total_seconds()
+                rate = processed / elapsed if elapsed > 0 else 0
+                eta = (total - processed) / rate if rate > 0 else 0
+
+                logger.debug(
+                    f"Progress: {processed}/{total} ({percentage:.1f}%) - "
+                    f"Files: {files} - Layers: {layers} - Errors: {errors} - "
+                    f"Cache hits: {cache_hits} - Retries: {retries} - "
+                    f"Rate: {rate:.1f} datasets/s - ETA: {eta:.0f}s"
                 )
-
-        self.stats["datasets_found"] = len(datasets)
-        return datasets
 
     async def update_stats(self, field: str, increment: int = 1):
         """Thread-safe statistics update"""
@@ -192,44 +197,17 @@ class ChemnitzDataDownloader:
                 return
             self.stats[field] += increment
 
-    async def get_service_info(self, service_url: str) -> Optional[dict]:
-        """Get service info with caching and retry logic"""
-        # Check cache first
-        async with self.cache_lock:
-            if service_url in self.service_cache:
-                await self.update_stats("cache_hits")
-                return self.service_cache[service_url]
+    async def progress_reporter(self):
+        while True:
+            await asyncio.sleep(5)  # Report every 5 seconds
+            async with self.stats_lock:
+                if self.stats["datasets_processed"] >= self.stats["datasets_found"]:
+                    break
+            await self.print_progress()
 
-        # Check if URL previously failed
-        async with self.failed_urls_lock:
-            if service_url in self.failed_urls:
-                return None
+    # endregion
 
-        info_url = f"{service_url}?f=json"
-
-        for attempt in range(self.max_retries):
-            try:
-                async with self.session.get(info_url) as response:
-                    response.raise_for_status()
-                    data = await response.json()
-
-                    # Cache successful result
-                    async with self.cache_lock:
-                        self.service_cache[service_url] = data
-
-                    return data
-
-            except Exception as e:
-                if attempt < self.max_retries - 1:
-                    await self.update_stats("retries")
-                    await asyncio.sleep(2**attempt)  # Exponential backoff
-                else:
-                    logger.error(f"Error getting service info from {service_url}: {e}")
-                    async with self.failed_urls_lock:
-                        self.failed_urls.add(service_url)
-                    return None
-        return None
-
+    # 6.
     async def download_layer_data(
         self,
         service_url: str,
@@ -305,6 +283,46 @@ class ChemnitzDataDownloader:
         logger.error(f"\t\t⚠ Couldn't download layer {layer_name}")
         return False
 
+    # 5.
+    async def get_service_info(self, service_url: str) -> Optional[dict]:
+        """Get service info with caching and retry logic"""
+        # Check cache first
+        async with self.cache_lock:
+            if service_url in self.service_cache:
+                await self.update_stats("cache_hits")
+                return self.service_cache[service_url]
+
+        # Check if URL previously failed
+        async with self.failed_urls_lock:
+            if service_url in self.failed_urls:
+                return None
+
+        info_url = f"{service_url}?f=json"
+
+        for attempt in range(self.max_retries):
+            try:
+                async with self.session.get(info_url) as response:
+                    response.raise_for_status()
+                    data = await response.json()
+
+                    # Cache successful result
+                    async with self.cache_lock:
+                        self.service_cache[service_url] = data
+
+                    return data
+
+            except Exception as e:
+                if attempt < self.max_retries - 1:
+                    await self.update_stats("retries")
+                    await asyncio.sleep(2**attempt)  # Exponential backoff
+                else:
+                    logger.error(f"Error getting service info from {service_url}: {e}")
+                    async with self.failed_urls_lock:
+                        self.failed_urls.add(service_url)
+                    return None
+        return None
+
+    # 4.
     async def download_feature_service_data(
         self,
         service_url: str,
@@ -411,6 +429,7 @@ class ChemnitzDataDownloader:
             await self.update_stats("errors")
             return False
 
+    # 3.
     async def process_dataset(self, metadata: Dict[str, str]) -> bool:
         """Process a single dataset"""
         title = metadata["title"]
@@ -435,35 +454,37 @@ class ChemnitzDataDownloader:
             await self.update_stats("errors")
             return False
 
-    async def print_progress(self):
-        """Enhanced progress reporting"""
-        async with self.stats_lock:
-            processed = self.stats["datasets_processed"]
-            total = self.stats["datasets_found"]
-            files = self.stats["files_downloaded"]
-            layers = self.stats["layers_downloaded"]
-            errors = self.stats["errors"]
-            cache_hits = self.stats["cache_hits"]
-            retries = self.stats["retries"]
+    # 2.
+    async def load_datasets_metadata_from_csv(self) -> List[Dict[str, str]]:
+        """Load dataset metadata from CSV file asynchronously"""
+        datasets = []
+        async with aiofiles.open(self.csv_file_path, "r", encoding="utf-8") as file:
+            content = await file.read()
 
-            if total > 0:
-                percentage = (processed / total) * 100
-                elapsed = (datetime.now() - self.stats["start_time"]).total_seconds()
-                rate = processed / elapsed if elapsed > 0 else 0
-                eta = (total - processed) / rate if rate > 0 else 0
+        # Parse CSV content
+        csv_file = io.StringIO(content)
+        reader = csv.DictReader(csv_file)
 
-                logger.debug(
-                    f"Progress: {processed}/{total} ({percentage:.1f}%) - "
-                    f"Files: {files} - Layers: {layers} - Errors: {errors} - "
-                    f"Cache hits: {cache_hits} - Retries: {retries} - "
-                    f"Rate: {rate:.1f} datasets/s - ETA: {eta:.0f}s"
+        for row in reader:
+            if row.get("url") and row.get("url").strip():
+                datasets.append(
+                    {
+                        "title": row.get("title", "").strip(),
+                        "url": row.get("url").strip(),
+                        "type": row.get("type", "").strip(),
+                        "description": row.get("description", "").strip(),
+                    }
                 )
 
+        self.stats["datasets_found"] = len(datasets)
+        return datasets
+
+    # 1.
     async def download_all_datasets(self):
         """Download all datasets with optimized batching and concurrency"""
         logger.info("Starting optimized Chemnitz Open Data download")
 
-        # region Load dataset metadata
+        # region Load datasets metadatas
         metadatas = await self.load_datasets_metadata_from_csv()
         if not metadatas:
             logger.error("No datasets found in CSV file")
@@ -476,30 +497,18 @@ class ChemnitzDataDownloader:
         logger.debug("-" * 50)
         # endregion
 
-        # region Progress reporting task
-        async def progress_reporter():
-            while True:
-                await asyncio.sleep(5)  # Report every 5 seconds
-                async with self.stats_lock:
-                    if self.stats["datasets_processed"] >= self.stats["datasets_found"]:
-                        break
-                await self.print_progress()
-
-        progress_task = asyncio.create_task(progress_reporter())
-        # endregion
+        progress_task = asyncio.create_task(self.progress_reporter())
 
         # Process in batches to avoid overwhelming memory
         for i in range(0, len(metadatas), self.batch_size):
             batch = metadatas[i : i + self.batch_size]
 
-            # Create semaphore for this batch
             semaphore = asyncio.Semaphore(self.max_workers)
 
             async def process_with_semaphore(metadata: Dict[str, str]):
                 async with semaphore:
                     return await self.process_dataset(metadata)
 
-            # Process batch
             tasks = [process_with_semaphore(metadata) for metadata in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -549,6 +558,7 @@ class ChemnitzDataDownloader:
         logger.debug(f"Data saved to: {self.output_dir.absolute()}")
 
 
+# region MAIN
 async def async_main():
     """Async main function with optimized settings"""
     csv_file = "open_data_portal_stadt_chemnitz.csv"
@@ -644,3 +654,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+# endregion

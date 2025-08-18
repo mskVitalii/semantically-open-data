@@ -155,11 +155,9 @@ class Chemnitz(BaseDataDownloader):
     # 5.
     async def get_service_info(self, service_url: str) -> Optional[dict]:
         """Get service info with caching and retry logic"""
-        # Check cache first
-        async with self.cache_lock:
-            if service_url in self.cache:
-                await self.update_stats("cache_hits")
-                return self.cache[service_url]
+        cached_service_info = await self.get_from_cache(service_url)
+        if cached_service_info is not None:
+            return cached_service_info
 
         # Check if URL previously failed
         async with self.failed_urls_lock:
@@ -172,13 +170,10 @@ class Chemnitz(BaseDataDownloader):
             try:
                 async with self.session.get(info_url) as response:
                     response.raise_for_status()
-                    data = await response.json()
+                    result = await response.json()
 
-                    # Cache successful result
-                    async with self.cache_lock:
-                        self.cache[service_url] = data
-
-                    return data
+                await self.add_to_cache(service_url, result)
+                return result
 
             except Exception as e:
                 if attempt < self.max_retries - 1:

@@ -315,11 +315,9 @@ class Berlin(BaseDataDownloader):
     # 4.
     async def get_package_details(self, package_name: str) -> Optional[Dict]:
         """Get package details with caching"""
-        # Check cache first
-        async with self.cache_lock:
-            if package_name in self.cache:
-                await self.update_stats("cache_hits")
-                return self.cache[package_name]
+        cached_service_info = await self.get_from_cache(package_name)
+        if cached_service_info is not None:
+            return cached_service_info
 
         try:
             async with self.session.get(
@@ -330,9 +328,7 @@ class Berlin(BaseDataDownloader):
 
                 if data.get("success"):
                     result = data.get("result")
-                    # Cache the result
-                    async with self.cache_lock:
-                        self.cache[package_name] = result
+                    await self.add_to_cache(package_name, result)
                     return result
                 else:
                     self.logger.warning(f"Package not found or error: {package_name}")

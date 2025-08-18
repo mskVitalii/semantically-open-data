@@ -21,7 +21,7 @@ class BaseDataDownloader(ABC):
     def __init__(
         self,
         output_dir: str = "data",
-        max_workers: int = 20,
+        max_workers: int = 64,
         delay: float = 0.05,
         is_embeddings: bool = False,
         is_store: bool = False,
@@ -51,7 +51,7 @@ class BaseDataDownloader(ABC):
         self.delay = delay
         self.batch_size = batch_size
         self.max_retries = max_retries
-        self.session: Optional[aiohttp.ClientSession] = None
+        self.session: aiohttp.ClientSession
         self.is_embeddings = is_embeddings
         self.is_store = is_store
 
@@ -173,7 +173,6 @@ class BaseDataDownloader(ABC):
     # endregion
 
     # region CACHE
-    # TODO: check usability
     async def add_to_cache(self, key: str, value: Any):
         """
         Thread-safe cache addition
@@ -195,8 +194,15 @@ class BaseDataDownloader(ABC):
         Returns:
             Cached value or None
         """
+        result = None
         async with self.cache_lock:
-            return self.cache.get(key)
+            if key in self.cache:
+                result = self.cache.get(key)
+
+        if result is not None:
+            await self.update_stats("cache_hits")
+
+        return result
 
     # endregion
 

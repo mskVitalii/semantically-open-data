@@ -90,14 +90,6 @@ class Leipzig(BaseDataDownloader):
         """Download a single resource with retry logic"""
         try:
             url = resource.get("url")
-            if not url:
-                return False
-
-            # Check if URL previously failed
-            async with self.failed_urls_lock:
-                if url in self.failed_urls:
-                    return False
-
             resource_name = resource.get("name", resource.get("id", "unnamed"))
             resource_format = resource.get("format", "").lower()
 
@@ -223,13 +215,18 @@ class Leipzig(BaseDataDownloader):
             download_semaphore = asyncio.Semaphore(self.max_workers)
 
             async def download_with_semaphore(_resource):
+                url = _resource.get("url")
+                if not url:
+                    return False
+                if await self.is_url_failed(url):
+                    return False
+
                 async with download_semaphore:
                     return await self.download_resource(_resource, dataset_dir)
 
             # Try to download a resource
             success = False
             for resource in sorted_resources:
-                # TODO: make checks here - optimization
                 if await download_with_semaphore(resource):
                     success = True
                     await self.update_stats("files_downloaded")
@@ -243,8 +240,6 @@ class Leipzig(BaseDataDownloader):
                 save_file_with_task(metadata_file, content)
 
                 package_meta.fields = await extract_data_content(dataset_dir)
-                # TODO: add dataset to dataset_db_buffer
-
                 if self.is_embeddings and self.vector_db_buffer:
                     await self.vector_db_buffer.add(package_meta)
 

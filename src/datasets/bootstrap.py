@@ -2,10 +2,10 @@ import asyncio
 import time
 from pathlib import Path
 
-from src.datasets.berlin import BerlinOpenDataDownloader
-from src.datasets.chemnitz import ChemnitzOpenDataDownloader
-from src.datasets.dresden import DresdenOpenDataDownloader
-from src.datasets.leipzig import LeipzigOpenDataDownloader
+from src.datasets.berlin import Berlin
+from src.datasets.chemnitz import Chemnitz
+from src.datasets.dresden import Dresden
+from src.datasets.leipzig import Leipzig
 from src.infrastructure.logger import get_prefixed_logger
 from src.infrastructure.paths import PROJECT_ROOT
 from src.utils.datasets_utils import safe_delete
@@ -19,7 +19,7 @@ async def download_berlin():
     safe_delete(path, logger)
     start_time = time.perf_counter()
 
-    async with BerlinOpenDataDownloader(
+    async with Berlin(
         output_dir=path,
         is_embeddings=True,
         is_store=True,
@@ -41,7 +41,7 @@ async def download_chemnitz():
     safe_delete(path, logger)
     start_time = time.perf_counter()
 
-    async with ChemnitzOpenDataDownloader(
+    async with Chemnitz(
         csv_file,
         output_dir=path,
         is_embeddings=True,
@@ -59,7 +59,7 @@ async def download_leipzig():
     safe_delete(path, logger)
     start_time = time.perf_counter()
 
-    async with LeipzigOpenDataDownloader(
+    async with Leipzig(
         output_dir=path,
         is_embeddings=True,
         is_store=True,
@@ -76,7 +76,7 @@ async def download_dresden():
     safe_delete(path, logger)
     start_time = time.perf_counter()
 
-    async with DresdenOpenDataDownloader(
+    async with Dresden(
         output_dir=path,
         is_embeddings=True,
         is_store=True,

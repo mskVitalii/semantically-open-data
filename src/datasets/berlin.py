@@ -1,9 +1,8 @@
 import asyncio
 import logging
 import sys
-from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set
 from urllib.parse import urlparse
 
 import aiohttp
@@ -23,13 +22,8 @@ from src.utils.datasets_utils import (
 from src.utils.embeddings_utils import extract_data_content
 from src.utils.file import save_file_with_task
 
-if TYPE_CHECKING:
-    from _typeshed import SupportsWrite  # noqa: F401
 
-logger = get_prefixed_logger(__name__, "BERLIN")
-
-
-class BerlinOpenDataDownloader(BaseDataDownloader):
+class Berlin(BaseDataDownloader):
     """Optimized async class for downloading Berlin open data"""
 
     # region INIT
@@ -70,33 +64,26 @@ class BerlinOpenDataDownloader(BaseDataDownloader):
         )
         self.base_url = "https://datenregister.berlin.de"
         self.api_url = f"{self.base_url}/api/3/action"
-
-        # Statistics
-        self.stats = {
-            "datasets_found": 0,
-            "datasets_processed": 0,
-            "files_downloaded": 0,
-            "errors": 0,
-            "failed_datasets": set(),
-            "start_time": datetime.now(),
-            "cache_hits": 0,
-            "playwright_downloads": 0,
-        }
-        # Cache for package details to avoid redundant API calls
-        self.cache = {}
-        self.cache_lock = asyncio.Lock()
+        self.logger = get_prefixed_logger(__name__, "BERLIN")
+        self.stats["playwright_downloads"] = 0
 
         # Track domains that require Playwright
         self.playwright_domains: Set[str] = set()
         self.playwright_lock = asyncio.Lock()
 
-        # Playwright browser instance (reused)
+        # Playwright browser instance
         self.browser = None
         self.browser_lock = asyncio.Lock()
 
     async def _cleanup_resources(self):
         if self.browser:
             await self.browser.close()
+
+    # endregion
+
+    # region STATS
+    async def get_additional_metrics(self) -> list[str]:
+        return ["playwright_downloads"]
 
     # endregion
 
@@ -120,7 +107,7 @@ class BerlinOpenDataDownloader(BaseDataDownloader):
     async def download_file_playwright(self, url: str, filepath: Path) -> bool:
         """Optimized Playwright download with browser reuse"""
         if filepath.exists() and filepath.stat().st_size > 0:
-            logger.debug(f"File already exists: {filepath.name}")
+            self.logger.debug(f"File already exists: {filepath.name}")
             return True
 
         browser = await self.get_or_create_browser()
@@ -167,56 +154,18 @@ class BerlinOpenDataDownloader(BaseDataDownloader):
             await download.save_as(filepath)
             await context.close()
 
-            logger.debug(f"Downloaded via Playwright: {filepath.name}")
+            self.logger.debug(f"Downloaded via Playwright: {filepath.name}")
             await self.update_stats("playwright_downloads")
             return True
 
         except Exception as e:
-            logger.error(f"Playwright error for {url}: {e}")
+            self.logger.error(f"Playwright error for {url}: {e}")
             await context.close()
             return False
 
     # endregion
 
-    # region STATS
-    async def update_stats(self, field: str, increment: int = 1):
-        """Thread-safe statistics update"""
-        async with self.stats_lock:
-            self.stats[field] += increment
-
-    async def print_progress(self):
-        """Enhanced progress reporting"""
-        async with self.stats_lock:
-            processed = self.stats["datasets_processed"]
-            total = self.stats["datasets_found"]
-            files = self.stats["files_downloaded"]
-            errors = self.stats["errors"]
-            cache_hits = self.stats["cache_hits"]
-            playwright = self.stats["playwright_downloads"]
-
-        if total > 0:
-            percentage = (processed / total) * 100
-            elapsed = (datetime.now() - self.stats["start_time"]).total_seconds()
-            rate = processed / elapsed if elapsed > 0 else 0
-            eta = (total - processed) / rate if rate > 0 else 0
-
-            logger.info(
-                ""
-                f"Progress: {processed}/{total} ({percentage:.1f}%)\t"
-                f"Files: {files}\tErrors: {errors}\t"
-                f"Cache hits: {cache_hits}\tPlaywright: {playwright}\t"
-                f"Rate: {rate:.1f} datasets/s\tETA: {eta:.0f}s"
-            )
-
-    async def progress_reporter(self):
-        while True:
-            await asyncio.sleep(5)  # More frequent updates
-            async with self.stats_lock:
-                if self.stats["datasets_processed"] >= self.stats["datasets_found"]:
-                    break
-            await self.print_progress()
-
-    # endregion
+    # region LOGIC STEPS
 
     @staticmethod
     def get_file_extension(url: str, format_hint: str = None) -> str:
@@ -291,7 +240,7 @@ class BerlinOpenDataDownloader(BaseDataDownloader):
         """Optimized file download with streaming"""
         # Check if file already exists
         if filepath.exists() and filepath.stat().st_size > 0:
-            logger.debug(f"File already exists: {filepath.name}")
+            self.logger.debug(f"File already exists: {filepath.name}")
             return True
 
         # Check if domain requires Playwright
@@ -300,7 +249,7 @@ class BerlinOpenDataDownloader(BaseDataDownloader):
             return await self.download_file_playwright(url, filepath)
 
         try:
-            logger.debug(f"Downloading: {url}")
+            self.logger.debug(f"Downloading: {url}")
 
             # Create temporary file for atomic write
             temp_filepath = filepath.with_suffix(filepath.suffix + ".tmp")
@@ -318,7 +267,9 @@ class BerlinOpenDataDownloader(BaseDataDownloader):
                     # Read first chunk to check if it's actually HTML
                     first_chunk = await response.content.read(1024)
                     if b"<!DOCTYPE" in first_chunk or b"<html" in first_chunk:
-                        logger.debug(f"HTML content detected, trying Playwright: {url}")
+                        self.logger.debug(
+                            f"HTML content detected, trying Playwright: {url}"
+                        )
                         async with self.playwright_lock:
                             self.playwright_domains.add(domain)
                         return await self.download_file_playwright(url, filepath)
@@ -339,21 +290,23 @@ class BerlinOpenDataDownloader(BaseDataDownloader):
 
             # Verify file is not empty
             if temp_filepath.stat().st_size == 0:
-                logger.warning(f"Downloaded file is empty: {filepath}")
+                self.logger.warning(f"Downloaded file is empty: {filepath}")
                 temp_filepath.unlink()
                 return False
 
             # Atomic rename
             temp_filepath.rename(filepath)
 
-            logger.debug(
+            self.logger.debug(
                 f"Downloaded: {filepath.name} ({filepath.stat().st_size} bytes)"
             )
             await self.update_stats("files_downloaded")
             return True
 
         except Exception as e:
-            logger.debug(f"Regular download failed for {url}: {e}, trying Playwright")
+            self.logger.debug(
+                f"Regular download failed for {url}: {e}, trying Playwright"
+            )
             # Mark domain for Playwright and retry
             async with self.playwright_lock:
                 self.playwright_domains.add(domain)
@@ -382,11 +335,11 @@ class BerlinOpenDataDownloader(BaseDataDownloader):
                         self.cache[package_name] = result
                     return result
                 else:
-                    logger.warning(f"Package not found or error: {package_name}")
+                    self.logger.warning(f"Package not found or error: {package_name}")
                     return None
 
         except aiohttp.ClientError as e:
-            logger.error(f"Error fetching package details for {package_name}: {e}")
+            self.logger.error(f"Error fetching package details for {package_name}: {e}")
             return None
 
     # 3.
@@ -412,18 +365,20 @@ class BerlinOpenDataDownloader(BaseDataDownloader):
             # Skip if already processed successfully
             metadata_file = dataset_dir / "metadata.json"
             if metadata_file.exists():
-                logger.debug(f"Dataset already processed: {title}")
+                self.logger.debug(f"Dataset already processed: {title}")
                 await self.update_stats("datasets_processed")
                 return True
 
             dataset_dir.mkdir(exist_ok=True)
 
             if not resources:
-                logger.debug(f"No resources found for dataset: {title}")
+                self.logger.debug(f"No resources found for dataset: {title}")
                 await self.update_stats("datasets_processed")
                 return True
 
-            logger.debug(f"Processing dataset: {title} ({len(resources)} resources)")
+            self.logger.debug(
+                f"Processing dataset: {title} ({len(resources)} resources)"
+            )
 
             # Filter and prioritize resources
             valid_resources = []
@@ -475,7 +430,7 @@ class BerlinOpenDataDownloader(BaseDataDownloader):
                 success_count = sum(1 for r in results if r is True)
 
             if success_count > 0:
-                logger.debug(f"Downloaded {success_count} files for: {title}")
+                self.logger.debug(f"Downloaded {success_count} files for: {title}")
 
                 # Save metadata
                 package_meta = DatasetMetadataWithContent(
@@ -502,13 +457,13 @@ class BerlinOpenDataDownloader(BaseDataDownloader):
                     await self.dataset_db_buffer.add(package_meta)
             else:
                 # Clean up empty dataset
-                safe_delete(dataset_dir, logger)
+                safe_delete(dataset_dir, self.logger)
 
             await self.update_stats("datasets_processed")
             return True
 
         except Exception as e:
-            logger.error(f"Error processing dataset {package_name}: {e}")
+            self.logger.error(f"Error processing dataset {package_name}: {e}")
             async with self.stats_lock:
                 self.stats["failed_datasets"].add(package_name)
             await self.update_stats("errors")
@@ -520,7 +475,7 @@ class BerlinOpenDataDownloader(BaseDataDownloader):
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                logger.debug("Fetching list of all datasets...")
+                self.logger.debug("Fetching list of all datasets...")
                 async with self.session.get(f"{self.api_url}/package_list") as response:
                     response.raise_for_status()
                     data = await response.json()
@@ -528,16 +483,16 @@ class BerlinOpenDataDownloader(BaseDataDownloader):
                     if data.get("success"):
                         packages = data.get("result", [])
                         self.stats["datasets_found"] = len(packages)
-                        logger.info(f"Found {len(packages)} datasets")
+                        self.logger.info(f"Found {len(packages)} datasets")
                         return packages
                     else:
-                        logger.error(f"API error: {data.get('error')}")
+                        self.logger.error(f"API error: {data.get('error')}")
                         if attempt < max_retries - 1:
                             await asyncio.sleep(2**attempt)  # Exponential backoff
                         continue
 
             except aiohttp.ClientError as e:
-                logger.error(
+                self.logger.error(
                     f"Error fetching package list (attempt {attempt + 1}): {e}"
                 )
                 if attempt < max_retries - 1:
@@ -548,15 +503,15 @@ class BerlinOpenDataDownloader(BaseDataDownloader):
     # 1.
     async def process_all_datasets(self):
         """Optimized download with batching and better concurrency"""
-        logger.info("Starting optimized Berlin Open Data download")
+        self.logger.info("Starting optimized Berlin Open Data download")
 
         # Get list of all packages
         packages = await self.get_all_packages()
         if not packages:
-            logger.error("No packages found or error fetching package list")
+            self.logger.error("No packages found or error fetching package list")
             return
 
-        logger.debug(
+        self.logger.debug(
             f"Starting download of {len(packages)} datasets with {self.max_workers} workers"
         )
 
@@ -581,10 +536,10 @@ class BerlinOpenDataDownloader(BaseDataDownloader):
             # Handle exceptions
             for package, result in zip(batch, results):
                 if isinstance(result, Exception):
-                    logger.error(f"Exception in task for {package}: {result}")
+                    self.logger.error(f"Exception in task for {package}: {result}")
                     await self.update_stats("errors")
 
-            logger.debug(
+            self.logger.debug(
                 f"Completed batch {i // self.batch_size + 1}/{(len(packages) + self.batch_size - 1) // self.batch_size}"
             )
 
@@ -599,27 +554,11 @@ class BerlinOpenDataDownloader(BaseDataDownloader):
         if self.vector_db_buffer:
             await self.vector_db_buffer.flush()
 
-        logger.info("🎉 Download completed!")
+        # STATS
+        self.logger.info("🎉 Download completed!")
+        await self.print_final_report()
 
-        # Final statistics
-        end_time = datetime.now()
-        duration = end_time - self.stats["start_time"]
-
-        logger.debug("=" * 60)
-        logger.debug("DOWNLOAD STATISTICS")
-        logger.debug("=" * 60)
-        logger.debug(f"Datasets found: {self.stats['datasets_found']}")
-        logger.debug(f"Datasets processed: {self.stats['datasets_processed']}")
-        logger.debug(f"Files downloaded: {self.stats['files_downloaded']}")
-        logger.debug(f"Errors: {self.stats['errors']}")
-        logger.debug(f"Failed datasets: {len(self.stats['failed_datasets'])}")
-        logger.debug(f"Cache hits: {self.stats['cache_hits']}")
-        logger.debug(f"Playwright downloads: {self.stats['playwright_downloads']}")
-        logger.debug(f"Execution time: {duration}")
-        logger.debug(
-            f"Average time per dataset: {duration / max(1, self.stats['datasets_processed'])}"
-        )
-        logger.debug(f"Data saved to: {self.output_dir.absolute()}")
+    # endregion
 
 
 # region MAIN
@@ -672,7 +611,7 @@ async def main():
         logging.getLogger().setLevel(logging.INFO)
 
     try:
-        async with BerlinOpenDataDownloader(
+        async with Berlin(
             output_dir=args.output_dir,
             max_workers=args.max_workers,
             delay=args.delay,
@@ -683,9 +622,9 @@ async def main():
             await downloader.process_all_datasets()
 
     except KeyboardInterrupt:
-        logger.info("Download interrupted by user")
+        print("Download interrupted by user")
     except Exception as e:
-        logger.error(f"Unexpected error: {e}", exc_info=True)
+        print(f"Unexpected error: {e}")
         sys.exit(1)
 
 

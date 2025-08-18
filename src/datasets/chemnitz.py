@@ -4,9 +4,8 @@ import csv
 import json
 import logging
 import sys
-from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import aiofiles
 
@@ -19,14 +18,9 @@ from src.infrastructure.logger import get_prefixed_logger
 from src.utils.embeddings_utils import extract_data_content
 from src.utils.file import save_file_with_task
 
-if TYPE_CHECKING:
-    from _typeshed import SupportsWrite  # noqa: F401
 
-logger = get_prefixed_logger(__name__, "CHEMNITZ")
-
-
-class ChemnitzOpenDataDownloader(BaseDataDownloader):  # noqa: F821
-    """Optimized async class for downloading Chemnitz open data"""
+class Chemnitz(BaseDataDownloader):
+    """Class for downloading Chemnitz open data"""
 
     # region INIT
 
@@ -70,65 +64,18 @@ class ChemnitzOpenDataDownloader(BaseDataDownloader):  # noqa: F821
             max_retries,
         )
         self.csv_file_path = csv_file_path
-
-        # Statistics
-        self.stats = {
-            "datasets_found": 0,
-            "datasets_processed": 0,
-            "files_downloaded": 0,
-            "layers_downloaded": 0,
-            "errors": 0,
-            "failed_datasets": set(),
-            "start_time": datetime.now(),
-            "cache_hits": 0,
-            "retries": 0,
-        }
+        self.stats["layers_downloaded"] = 0
+        self.logger = get_prefixed_logger(__name__, "CHEMNITZ")
 
     # endregion
 
     # region STATS
-    async def print_progress(self):
-        """Enhanced progress reporting"""
-        async with self.stats_lock:
-            processed = self.stats["datasets_processed"]
-            total = self.stats["datasets_found"]
-            files = self.stats["files_downloaded"]
-            layers = self.stats["layers_downloaded"]
-            errors = self.stats["errors"]
-            cache_hits = self.stats["cache_hits"]
-            retries = self.stats["retries"]
-
-            if total > 0:
-                percentage = (processed / total) * 100
-                elapsed = (datetime.now() - self.stats["start_time"]).total_seconds()
-                rate = processed / elapsed if elapsed > 0 else 0
-                eta = (total - processed) / rate if rate > 0 else 0
-
-                logger.debug(
-                    f"Progress: {processed}/{total} ({percentage:.1f}%) - "
-                    f"Files: {files} - Layers: {layers} - Errors: {errors} - "
-                    f"Cache hits: {cache_hits} - Retries: {retries} - "
-                    f"Rate: {rate:.1f} datasets/s - ETA: {eta:.0f}s"
-                )
-
-    async def update_stats(self, field: str, increment: int = 1):
-        """Thread-safe statistics update"""
-        async with self.stats_lock:
-            if field == "failed_datasets":
-                # Special handling for set
-                return
-            self.stats[field] += increment
-
-    async def progress_reporter(self):
-        while True:
-            await asyncio.sleep(5)  # Report every 5 seconds
-            async with self.stats_lock:
-                if self.stats["datasets_processed"] >= self.stats["datasets_found"]:
-                    break
-            await self.print_progress()
+    async def get_additional_metrics(self) -> list[str]:
+        return ["layers_downloaded"]
 
     # endregion
 
+    # region LOGIC STEPS
     # 6.
     async def download_layer_data(
         self,
@@ -156,7 +103,7 @@ class ChemnitzOpenDataDownloader(BaseDataDownloader):  # noqa: F821
             file_name = f"{layer_name}.{file_ext}"
             file_path = dataset_dir / file_name
             if file_path.exists() and file_path.stat().st_size > 0:
-                logger.debug(f"\t\tLayer already downloaded: {file_name}")
+                self.logger.debug(f"\t\tLayer already downloaded: {file_name}")
                 return True
 
             for attempt in range(self.max_retries):
@@ -176,7 +123,7 @@ class ChemnitzOpenDataDownloader(BaseDataDownloader):  # noqa: F821
                                     )
                                     save_file_with_task(file_path, content)
 
-                                    logger.debug(f"\t\t✓ Saved as {file_name}")
+                                    self.logger.debug(f"\t\t✓ Saved as {file_name}")
                                     await self.update_stats("layers_downloaded")
                                     return True
 
@@ -188,7 +135,7 @@ class ChemnitzOpenDataDownloader(BaseDataDownloader):  # noqa: F821
                                 content = await response.read()
                                 save_file_with_task(file_path, content, binary=True)
 
-                                logger.debug(f"\t\t✓ Saved as {file_name}")
+                                self.logger.debug(f"\t\t✓ Saved as {file_name}")
                                 await self.update_stats("layers_downloaded")
                                 return True
 
@@ -197,12 +144,12 @@ class ChemnitzOpenDataDownloader(BaseDataDownloader):  # noqa: F821
                         await self.update_stats("retries")
                         await asyncio.sleep(2**attempt)
                     else:
-                        logger.error(
+                        self.logger.error(
                             f"\t\tError downloading layer {layer_name} with format {format_name}: {e}"
                         )
                         continue
 
-        logger.error(f"\t\t⚠ Couldn't download layer {layer_name}")
+        self.logger.error(f"\t\t⚠ Couldn't download layer {layer_name}")
         return False
 
     # 5.
@@ -238,7 +185,9 @@ class ChemnitzOpenDataDownloader(BaseDataDownloader):  # noqa: F821
                     await self.update_stats("retries")
                     await asyncio.sleep(2**attempt)  # Exponential backoff
                 else:
-                    logger.error(f"Error getting service info from {service_url}: {e}")
+                    self.logger.error(
+                        f"Error getting service info from {service_url}: {e}"
+                    )
                     async with self.failed_urls_lock:
                         self.failed_urls.add(service_url)
                     return None
@@ -267,7 +216,7 @@ class ChemnitzOpenDataDownloader(BaseDataDownloader):  # noqa: F821
             # Skip if already processed
             metadata_file = dataset_dir / "metadata.json"
             if metadata_file.exists():
-                logger.debug(f"\tDataset already processed: {title}")
+                self.logger.debug(f"\tDataset already processed: {title}")
                 await self.update_stats("datasets_processed")
                 return True
 
@@ -287,11 +236,13 @@ class ChemnitzOpenDataDownloader(BaseDataDownloader):  # noqa: F821
             all_features = layers + tables
 
             if not all_features:
-                logger.debug(f"\tNo layers to download in {title}")
+                self.logger.debug(f"\tNo layers to download in {title}")
                 await self.update_stats("datasets_processed")
                 return True
 
-            logger.debug(f"\tProcessing dataset: {title} ({len(all_features)} layers)")
+            self.logger.debug(
+                f"\tProcessing dataset: {title} ({len(all_features)} layers)"
+            )
 
             # Download layers concurrently with limited concurrency
             layer_semaphore = asyncio.Semaphore(5)  # Limit concurrent layer downloads
@@ -320,7 +271,7 @@ class ChemnitzOpenDataDownloader(BaseDataDownloader):  # noqa: F821
             )
 
             if success_count > 0:
-                logger.debug(
+                self.logger.debug(
                     f"\tDownloaded {success_count}/{len(all_features)} layers for: {title}"
                 )
 
@@ -339,13 +290,13 @@ class ChemnitzOpenDataDownloader(BaseDataDownloader):  # noqa: F821
                     await self.dataset_db_buffer.add(package_meta)
             else:
                 # Clean up empty dataset
-                safe_delete(dataset_dir, logger)
+                safe_delete(dataset_dir, self.logger)
 
             await self.update_stats("datasets_processed")
             return True
 
         except Exception as e:
-            logger.error(f"\tError processing dataset {title}: {e}")
+            self.logger.error(f"\tError processing dataset {title}: {e}")
             async with self.stats_lock:
                 self.stats["failed_datasets"].add(title)
             await self.update_stats("errors")
@@ -359,18 +310,18 @@ class ChemnitzOpenDataDownloader(BaseDataDownloader):  # noqa: F821
         dataset_type = metadata["type"]
         description = metadata.get("description", "")
 
-        logger.debug(f"Processing: {title}")
-        logger.debug(f"\tURL: {url}")
+        self.logger.debug(f"Processing: {title}")
+        self.logger.debug(f"\tURL: {url}")
 
         try:
             if "Feature Service" == dataset_type:
                 return await self.download_feature_service_data(url, title, description)
             else:
-                logger.debug(f"\t⚠ Unknown type {dataset_type} for {title}")
+                self.logger.debug(f"\t⚠ Unknown type {dataset_type} for {title}")
                 return False
 
         except Exception as e:
-            logger.error(f"\t❌ Error processing {title}: {e}")
+            self.logger.error(f"\t❌ Error processing {title}: {e}")
             async with self.stats_lock:
                 self.stats["failed_datasets"].add(title)
             await self.update_stats("errors")
@@ -404,19 +355,19 @@ class ChemnitzOpenDataDownloader(BaseDataDownloader):  # noqa: F821
     # 1.
     async def process_all_datasets(self):
         """Download all datasets with optimized batching and concurrency"""
-        logger.info("Starting optimized Chemnitz Open Data download")
+        self.logger.info("Starting optimized Chemnitz Open Data download")
 
         # region Load datasets metadatas
         metadatas = await self.load_datasets_metadata_from_csv()
         if not metadatas:
-            logger.error("No datasets found in CSV file")
+            self.logger.error("No datasets found in CSV file")
             return
 
-        logger.info(
+        self.logger.info(
             f"Found {len(metadatas)} datasets for download with {self.max_workers} workers"
         )
-        logger.debug(f"Saving datasets to folder: {self.output_dir.absolute()}")
-        logger.debug("-" * 50)
+        self.logger.debug(f"Saving datasets to folder: {self.output_dir.absolute()}")
+        self.logger.debug("-" * 50)
         # endregion
 
         progress_task = asyncio.create_task(self.progress_reporter())
@@ -437,10 +388,12 @@ class ChemnitzOpenDataDownloader(BaseDataDownloader):  # noqa: F821
             # Handle exceptions
             for metadata, result in zip(batch, results):
                 if isinstance(result, Exception):
-                    logger.error(f"Exception in task for {metadata['title']}: {result}")
+                    self.logger.error(
+                        f"Exception in task for {metadata['title']}: {result}"
+                    )
                     await self.update_stats("errors")
 
-            logger.info(
+            self.logger.info(
                 f"Completed batch {i // self.batch_size + 1}/"
                 f"{(len(metadatas) + self.batch_size - 1) // self.batch_size}"
             )
@@ -457,27 +410,11 @@ class ChemnitzOpenDataDownloader(BaseDataDownloader):  # noqa: F821
         if self.is_store:
             await self.dataset_db_buffer.flush()
 
-        # Final statistics
-        end_time = datetime.now()
-        duration = end_time - self.stats["start_time"]
+        # STATS
+        self.logger.info("🎉 Download completed!")
+        await self.print_final_report()
 
-        logger.debug("-" * 50)
-        logger.debug("=" * 60)
-        logger.debug("DOWNLOAD STATISTICS")
-        logger.debug("=" * 60)
-        logger.debug(f"Datasets found: {self.stats['datasets_found']}")
-        logger.debug(f"Datasets processed: {self.stats['datasets_processed']}")
-        logger.debug(f"Files downloaded: {self.stats['files_downloaded']}")
-        logger.debug(f"Layers downloaded: {self.stats['layers_downloaded']}")
-        logger.debug(f"Errors: {self.stats['errors']}")
-        logger.debug(f"Failed datasets: {len(self.stats['failed_datasets'])}")
-        logger.debug(f"Cache hits: {self.stats['cache_hits']}")
-        logger.debug(f"Retries: {self.stats['retries']}")
-        logger.debug(f"Execution time: {duration}")
-        logger.debug(
-            f"Average time per dataset: {duration / max(1, self.stats['datasets_processed'])}"
-        )
-        logger.debug(f"Data saved to: {self.output_dir.absolute()}")
+    # endregion
 
 
 # region MAIN
@@ -485,8 +422,8 @@ async def async_main():
     """Async main function with optimized settings"""
     csv_file = "open_data_portal_stadt_chemnitz.csv"
     if not Path(csv_file).exists():
-        logger.error(f"❌ File {csv_file} not found!")
-        logger.error("Make sure that CSV with datasets links is in the same folder.")
+        print(f"❌ File {csv_file} not found!")
+        print("Make sure that CSV with datasets links is in the same folder.")
         return 1
 
     import argparse
@@ -542,7 +479,7 @@ async def async_main():
         logging.getLogger().setLevel(logging.INFO)
 
     try:
-        async with ChemnitzOpenDataDownloader(
+        async with Chemnitz(
             csv_file,
             output_dir=args.output,
             max_workers=args.max_workers,
@@ -557,11 +494,11 @@ async def async_main():
         return 0
 
     except KeyboardInterrupt:
-        logger.warning("⚠️ Download interrupted by user")
+        print("⚠️ Download interrupted by user")
         return 130  # Standard for Ctrl+C
 
     except Exception as e:
-        logger.error(f"❌ An error occurred: {e}")
+        print(f"❌ An error occurred: {e}")
         if args.debug:
             import traceback
 

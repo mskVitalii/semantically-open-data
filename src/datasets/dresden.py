@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -22,10 +21,8 @@ from src.utils.datasets_utils import sanitize_filename, safe_delete
 from src.utils.embeddings_utils import extract_data_content
 from src.utils.file import save_file_with_task
 
-logger = get_prefixed_logger(__name__, "DRESDEN")
 
-
-class DresdenOpenDataDownloader(BaseDataDownloader):
+class Dresden(BaseDataDownloader):
     """Optimized async class for downloading Dresden open data"""
 
     # region INIT
@@ -68,62 +65,11 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
         )
         self.base_url = "https://register.opendata.sachsen.de"
         self.search_endpoint = f"{self.base_url}/store/search"
-
-        # Statistics
-        self.stats = {
-            "datasets_found": 0,
-            "datasets_processed": 0,
-            "files_downloaded": 0,
-            "errors": 0,
-            "failed_datasets": set(),
-            "start_time": datetime.now(),
-            "cache_hits": 0,
-            "retries": 0,
-        }
+        self.logger = get_prefixed_logger(__name__, "DRESDEN")
 
     # endregion
 
-    # region STATS
-    async def print_progress(self):
-        """Enhanced progress reporting"""
-        async with self.stats_lock:
-            processed = self.stats["datasets_processed"]
-            total = self.stats["datasets_found"]
-            files = self.stats["files_downloaded"]
-            errors = self.stats["errors"]
-            cache_hits = self.stats["cache_hits"]
-            retries = self.stats["retries"]
-
-            if total > 0:
-                percentage = (processed / total) * 100
-                elapsed = (datetime.now() - self.stats["start_time"]).total_seconds()
-                rate = processed / elapsed if elapsed > 0 else 0
-                eta = (total - processed) / rate if rate > 0 else 0
-
-                logger.info(
-                    f"Progress: {processed}/{total} ({percentage:.1f}%)\t"
-                    f"Files: {files}\tErrors: {errors}\t"
-                    f"Cache hits: {cache_hits}\tRetries: {retries}\t"
-                    f"Rate: {rate:.1f} datasets/s\tETA: {eta:.0f}s"
-                )
-
-    async def update_stats(self, field: str, increment: int = 1):
-        """Thread-safe statistics update"""
-        async with self.stats_lock:
-            if field == "failed_datasets":
-                # Special handling for set
-                return
-            self.stats[field] += increment
-
-    async def progress_reporter(self):
-        while True:
-            await asyncio.sleep(5)  # Report every 5 seconds
-            async with self.stats_lock:
-                if self.stats["datasets_processed"] >= self.stats["datasets_found"]:
-                    break
-            await self.print_progress()
-
-    # endregion
+    # region LOGIC STEPS
 
     # 8.
     async def download_file(self, url: str, filename: str, dataset_dir: Path) -> bool:
@@ -142,7 +88,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
 
         # Check if file already exists
         if filepath.exists() and filepath.stat().st_size > 0:
-            logger.debug(f"File already exists: {filepath}")
+            self.logger.debug(f"File already exists: {filepath}")
             return True
 
         # Check if URL previously failed
@@ -152,7 +98,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
 
         for attempt in range(self.max_retries):
             try:
-                logger.debug(f"Downloading: {url}")
+                self.logger.debug(f"Downloading: {url}")
                 async with self.session.get(url) as response:
                     response.raise_for_status()
 
@@ -165,7 +111,9 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
                         and int(content_length) < 100
                         and "html" in content_type
                     ):
-                        logger.warning(f"Response appears to be an error page: {url}")
+                        self.logger.warning(
+                            f"Response appears to be an error page: {url}"
+                        )
                         async with self.failed_urls_lock:
                             self.failed_urls.add(url)
                         return False
@@ -182,7 +130,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
 
                     # Verify file is not empty
                     if temp_path.stat().st_size == 0:
-                        logger.warning(f"Downloaded file is empty: {filepath}")
+                        self.logger.warning(f"Downloaded file is empty: {filepath}")
                         temp_path.unlink()
                         async with self.failed_urls_lock:
                             self.failed_urls.add(url)
@@ -191,7 +139,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
                     # Atomic rename
                     temp_path.rename(filepath)
 
-                    logger.debug(
+                    self.logger.debug(
                         f"File saved: {filepath} ({filepath.stat().st_size} bytes)"
                     )
                     await self.update_stats("files_downloaded")
@@ -202,7 +150,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
                     await self.update_stats("retries")
                     await asyncio.sleep(2**attempt)
                 else:
-                    logger.error(f"Error downloading {url}: {e}")
+                    self.logger.error(f"Error downloading {url}: {e}")
                     await self.update_stats("errors")
                     async with self.failed_urls_lock:
                         self.failed_urls.add(url)
@@ -210,8 +158,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
         return False
 
     # 7.
-    @staticmethod
-    def extract_from_distributions(metadata: Dict) -> List[Dict]:
+    def extract_from_distributions(self, metadata: Dict) -> List[Dict]:
         """
         Fallback method to extract download URLs from distribution metadata
 
@@ -226,20 +173,20 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
         if not metadata:
             return downloads
 
-        logger.debug(f"Extracting URLs from metadata with {len(metadata)} entries")
+        self.logger.debug(f"Extracting URLs from metadata with {len(metadata)} entries")
 
         # Search for distributions in metadata
         for subject, predicates in metadata.items():
-            logger.debug(f"Checking subject: {subject}")
+            self.logger.debug(f"Checking subject: {subject}")
 
             # Look for dcat:distribution
             distributions = predicates.get("http://www.w3.org/ns/dcat#distribution", [])
-            logger.debug(f"Found distributions: {len(distributions)}")
+            self.logger.debug(f"Found distributions: {len(distributions)}")
 
             for dist in distributions:
                 if dist.get("type") == "uri":
                     dist_uri = dist.get("value")
-                    logger.debug(f"Processing distribution: {dist_uri}")
+                    self.logger.debug(f"Processing distribution: {dist_uri}")
 
                     # Get distribution information
                     dist_info = metadata.get(dist_uri, {})
@@ -256,7 +203,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
 
                     if access_urls and access_urls[0].get("type") == "uri":
                         download_url = access_urls[0].get("value")
-                        logger.debug(f"Found download URL: {download_url}")
+                        self.logger.debug(f"Found download URL: {download_url}")
 
                     # Look for file format
                     format_info = dist_info.get("http://purl.org/dc/terms/format", [])
@@ -299,7 +246,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
                                 "distribution_uri": dist_uri,
                             }
                         )
-                        logger.debug(f"Added download file: {file_title}")
+                        self.logger.debug(f"Added download file: {file_title}")
 
         return downloads
 
@@ -309,7 +256,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
     ) -> Optional[Dict]:
         """Check if a URL is available and return download info"""
         try:
-            logger.debug(f"Checking availability: {url}")
+            self.logger.debug(f"Checking availability: {url}")
             async with self.session.head(
                 url, timeout=ClientTimeout(total=10)
             ) as response:
@@ -346,7 +293,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
         downloads = []
 
         if not dataset_uri:
-            logger.warning("No dataset URI provided")
+            self.logger.warning("No dataset URI provided")
             return downloads
 
         # Formats to try in priority order
@@ -382,10 +329,12 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
 
         # Fallback: try to extract from distribution metadata if no direct files found
         if not downloads:
-            logger.debug("No direct content files found, trying distribution metadata")
+            self.logger.debug(
+                "No direct content files found, trying distribution metadata"
+            )
             downloads = self.extract_from_distributions(dataset_metadata)
 
-        logger.debug(f"Found {len(downloads)} files for download")
+        self.logger.debug(f"Found {len(downloads)} files for download")
         return downloads
 
     # 4.
@@ -397,7 +346,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
         entry_id = dataset_info.get("entryId")
 
         if not context_id or not entry_id:
-            logger.warning("Missing contextId or entryId")
+            self.logger.warning("Missing contextId or entryId")
             return False
 
         # Check if already processed
@@ -408,7 +357,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
             if d.is_dir() and d.name.startswith(safe_key)
         ]
         if existing_dirs:
-            logger.debug(f"Dataset already processed: {safe_key}")
+            self.logger.debug(f"Dataset already processed: {safe_key}")
             await self.update_stats("datasets_processed")
             return True
 
@@ -416,7 +365,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
         dataset_metadata = dataset_info.get("metadata", {})
 
         if not dataset_metadata:
-            logger.warning(f"Missing metadata for dataset {context_id}/{entry_id}")
+            self.logger.warning(f"Missing metadata for dataset {context_id}/{entry_id}")
             return False
 
         # Extract dataset information
@@ -463,7 +412,9 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
                     break
 
         if not dataset_uri:
-            logger.warning(f"Dataset URI not found in metadata {context_id}/{entry_id}")
+            self.logger.warning(
+                f"Dataset URI not found in metadata {context_id}/{entry_id}"
+            )
             return False
 
         # Directory creation
@@ -483,14 +434,14 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
             country="Germany",
         )
 
-        logger.debug(f"Processing dataset: {title}")
-        logger.debug(f"Dataset URI: {dataset_uri}")
+        self.logger.debug(f"Processing dataset: {title}")
+        self.logger.debug(f"Dataset URI: {dataset_uri}")
 
         # Extract download links
         downloads = await self.extract_download_urls(dataset_metadata, dataset_uri)
 
         if not downloads:
-            logger.debug(f"No download files found for dataset: {title}")
+            self.logger.debug(f"No download files found for dataset: {title}")
             # Still save metadata even if no downloads
             metadata_file = dataset_dir / "metadata.json"
             content = package_meta.to_json()
@@ -519,7 +470,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
         for download_info in sorted_downloads:
             if await download_with_semaphore(download_info):
                 success = True
-                logger.debug(
+                self.logger.debug(
                     f"Successfully downloaded {download_info.get('extension')} file"
                 )
                 break  # Stop after first successful download
@@ -539,7 +490,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
                 await self.dataset_db_buffer.add(package_meta)
         else:
             # Clean up empty dataset
-            safe_delete(dataset_dir, logger)
+            safe_delete(dataset_dir, self.logger)
 
         await self.update_stats("datasets_processed")
         return success
@@ -566,7 +517,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
 
         for attempt in range(self.max_retries):
             try:
-                logger.debug(f"Searching datasets: offset={offset}, limit={limit}")
+                self.logger.debug(f"Searching datasets: offset={offset}, limit={limit}")
                 async with self.session.get(
                     self.search_endpoint, params=params
                 ) as response:
@@ -577,7 +528,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
                     await self.update_stats("retries")
                     await asyncio.sleep(2**attempt)  # Exponential backoff
                 else:
-                    logger.error(f"Error searching datasets: {e}")
+                    self.logger.error(f"Error searching datasets: {e}")
                     return {}
         return {}
 
@@ -595,25 +546,27 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
             )
 
             if not search_result or "resource" not in search_result:
-                logger.warning("Empty response from API or invalid format")
+                self.logger.warning("Empty response from API or invalid format")
                 break
 
             children = search_result["resource"].get("children", [])
             total_results = search_result.get("results", 0)
 
             if not children:
-                logger.debug("No more datasets found")
+                self.logger.debug("No more datasets found")
                 break
 
             if offset == 0:
                 self.stats["datasets_found"] = total_results
-                logger.debug(f"Total datasets found: {total_results}")
+                self.logger.debug(f"Total datasets found: {total_results}")
 
             all_datasets.extend(children)
 
             # Move to next page
             offset += limit
-            logger.debug(f"Collected datasets: {len(all_datasets)} of {total_results}")
+            self.logger.debug(
+                f"Collected datasets: {len(all_datasets)} of {total_results}"
+            )
 
             # If we got fewer results than requested, this is the last page
             if len(children) < limit:
@@ -624,16 +577,16 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
     # 1.
     async def process_all_datasets(self):
         """Download all datasets with optimized async processing"""
-        logger.info("Starting optimized Dresden Open Data download")
+        self.logger.info("Starting optimized Dresden Open Data download")
 
         # First, collect all datasets
         all_datasets = await self.collect_all_datasets()
 
         if not all_datasets:
-            logger.error("No datasets found")
+            self.logger.error("No datasets found")
             return
 
-        logger.debug(
+        self.logger.debug(
             f"Starting download of {len(all_datasets)} datasets with {self.max_workers} workers"
         )
 
@@ -649,7 +602,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
                     try:
                         return await self.process_dataset(dataset)
                     except Exception as e:
-                        logger.error(f"Error processing dataset: {e}")
+                        self.logger.error(f"Error processing dataset: {e}")
                         await self.update_stats("errors")
                         return False
 
@@ -657,7 +610,7 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
             tasks = [process_with_semaphore(dataset) for dataset in batch]
             await asyncio.gather(*tasks, return_exceptions=True)
 
-            logger.debug(
+            self.logger.debug(
                 f"Completed batch {i // self.batch_size + 1}/"
                 f"{(len(all_datasets) + self.batch_size - 1) // self.batch_size}"
             )
@@ -674,27 +627,11 @@ class DresdenOpenDataDownloader(BaseDataDownloader):
         if self.is_store:
             await self.dataset_db_buffer.flush()
 
-        logger.info("🎉 Download completed!")
+        # STATS
+        self.logger.info("🎉 Download completed!")
+        await self.print_final_report()
 
-        # Final statistics
-        end_time = datetime.now()
-        duration = end_time - self.stats["start_time"]
-
-        logger.debug("=" * 60)
-        logger.debug("DOWNLOAD STATISTICS")
-        logger.debug("=" * 60)
-        logger.debug(f"Datasets found: {self.stats['datasets_found']}")
-        logger.debug(f"Datasets processed: {self.stats['datasets_processed']}")
-        logger.debug(f"Files downloaded: {self.stats['files_downloaded']}")
-        logger.debug(f"Errors: {self.stats['errors']}")
-        logger.debug(f"Failed datasets: {len(self.stats['failed_datasets'])}")
-        logger.debug(f"Cache hits: {self.stats['cache_hits']}")
-        logger.debug(f"Retries: {self.stats['retries']}")
-        logger.debug(f"Execution time: {duration}")
-        logger.debug(
-            f"Average time per dataset: {duration / max(1, self.stats['datasets_processed'])}"
-        )
-        logger.debug(f"Data saved to: {self.output_dir.absolute()}")
+    # endregion
 
 
 # region MAIN
@@ -753,7 +690,7 @@ async def async_main():
         logging.getLogger().setLevel(logging.INFO)
 
     try:
-        async with DresdenOpenDataDownloader(
+        async with Dresden(
             output_dir=args.output_dir,
             max_workers=args.max_workers,
             delay=args.delay,
@@ -766,11 +703,11 @@ async def async_main():
         return 0
 
     except KeyboardInterrupt:
-        logger.warning("⚠️ Download interrupted by user")
+        print("⚠️ Download interrupted by user")
         return 130  # Standard for Ctrl+C
 
     except Exception as e:
-        logger.error(f"❌ An error occurred: {e}")
+        print(f"❌ An error occurred: {e}")
         if args.debug:
             import traceback
 

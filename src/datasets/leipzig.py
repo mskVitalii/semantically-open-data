@@ -2,7 +2,6 @@ import asyncio
 import logging
 import sys
 import os
-from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional
 from urllib.parse import urlparse, unquote
@@ -18,10 +17,8 @@ from src.utils.datasets_utils import sanitize_filename, safe_delete
 from src.utils.embeddings_utils import extract_data_content
 from src.utils.file import save_file_with_task
 
-logger = get_prefixed_logger(__name__, "LEIPZIG")
 
-
-class LeipzigOpenDataDownloader(BaseDataDownloader):
+class Leipzig(BaseDataDownloader):
     """Optimized async class for downloading Leipzig CSV/JSON data"""
 
     # region INIT
@@ -65,84 +62,11 @@ class LeipzigOpenDataDownloader(BaseDataDownloader):
         )
         self.base_url = "https://opendata.leipzig.de"
         self.api_url = f"{self.base_url}/api/3/action"
-
-        # Target formats
-        self.target_formats = {"csv", "json", "geojson"}
-
-        # Statistics
-        self.stats = {
-            "total_packages_checked": 0,
-            "packages_with_target_formats": 0,
-            "total_target_resources": 0,
-            "successful_downloads": 0,
-            "failed_downloads": 0,
-            "csv_count": 0,
-            "json_count": 0,
-            "geojson_count": 0,
-            "start_time": datetime.now(),
-            "cache_hits": 0,
-            "retries": 0,
-        }
+        self.logger = get_prefixed_logger(__name__, "LEIPZIG")
 
     # endregion
 
-    # region STATS
-    async def print_progress(self, current: int, total: int):
-        """Print progress information"""
-        async with self.stats_lock:
-            percentage = (current / total * 100) if total > 0 else 0
-            elapsed = (datetime.now() - self.stats["start_time"]).total_seconds()
-            rate = current / elapsed if elapsed > 0 else 0
-            eta = (total - current) / rate if rate > 0 else 0
-
-            logger.debug(
-                f"Progress: {current}/{total} ({percentage:.1f}%) - "
-                f"Downloads: {self.stats['successful_downloads']} - "
-                f"Errors: {self.stats['failed_downloads']} - "
-                f"Cache hits: {self.stats['cache_hits']} - "
-                f"Rate: {rate:.1f} packages/s - ETA: {eta:.0f}s"
-            )
-
-    async def create_summary_report(self):
-        """Create and display summary report"""
-        duration = datetime.now() - self.stats["start_time"]
-
-        text_report = f"""
-Leipzig Open Data CSV & JSON Download Summary
-============================================
-
-Completed: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-Duration: {duration}
-Filter: CSV and JSON formats only
-
-📊 Statistics:
-- Total packages checked: {self.stats["total_packages_checked"]}
-- Packages with CSV/JSON: {self.stats["packages_with_target_formats"]}
-- Target resources found: {self.stats["total_target_resources"]}
-- Successfully downloaded: {self.stats["successful_downloads"]}
-- Download errors: {self.stats["failed_downloads"]}
-- Cache hits: {self.stats["cache_hits"]}
-- Retries: {self.stats["retries"]}
-
-📄 By format:
-- CSV files: {self.stats["csv_count"]}
-- JSON files: {self.stats["json_count"]}
-- GeoJSON files: {self.stats["geojson_count"]}
-
-📁 Data saved to: {self.output_dir.absolute()}
-
-💡 Each dataset contains:
-- Data files (CSV/JSON/GeoJSON)
-- metadata.json - dataset metadata
-"""
-        logger.debug(text_report)
-
-    async def update_stats(self, field: str, increment: int = 1):
-        """Thread-safe statistics update"""
-        async with self.stats_lock:
-            self.stats[field] += increment
-
-    # endregion
+    # region LOGIC STEPS
 
     @staticmethod
     def get_file_extension(url: str, format_hint: str) -> str:
@@ -178,14 +102,7 @@ Filter: CSV and JSON formats only
             resource_format = resource.get("format", "").lower()
 
             # Update format-specific counters
-            if resource_format == "csv":
-                await self.update_stats("csv_count")
-            elif resource_format == "json":
-                await self.update_stats("json_count")
-            elif resource_format == "geojson":
-                await self.update_stats("geojson_count")
-
-            logger.debug(
+            self.logger.debug(
                 f"\t📄 Downloading: {resource_name} ({resource_format.upper()})"
             )
 
@@ -222,7 +139,7 @@ Filter: CSV and JSON formats only
 
                         # Verify file is not empty
                         if temp_path.stat().st_size == 0:
-                            logger.warning(f"Downloaded file is empty: {filename}")
+                            self.logger.warning(f"Downloaded file is empty: {filename}")
                             temp_path.unlink()
                             async with self.failed_urls_lock:
                                 self.failed_urls.add(url)
@@ -232,7 +149,7 @@ Filter: CSV and JSON formats only
                         temp_path.rename(file_path)
 
                         file_size = file_path.stat().st_size
-                        logger.debug(f"\t✅ {filename} ({file_size:,} bytes)")
+                        self.logger.debug(f"\t✅ {filename} ({file_size:,} bytes)")
                         return True
 
                 except Exception as e:
@@ -240,14 +157,14 @@ Filter: CSV and JSON formats only
                         await self.update_stats("retries")
                         await asyncio.sleep(2**attempt)
                     else:
-                        logger.error(f"\t❌ Error downloading {url}: {e}")
+                        self.logger.error(f"\t❌ Error downloading {url}: {e}")
                         async with self.failed_urls_lock:
                             self.failed_urls.add(url)
                         return False
 
             return False
         except Exception as e:
-            logger.error(f"\t❌ Unexpected error: {e}")
+            self.logger.error(f"\t❌ Unexpected error: {e}")
             return False
 
     # 6.
@@ -260,9 +177,9 @@ Filter: CSV and JSON formats only
             package_title = package_data.get("title", metadata["package_id"])
             organization = package_data.get("organization", {}).get("title", "Unknown")
 
-            logger.debug(f"\n📦 Processing: {package_title}")
-            logger.debug(f"\t🏢 Organization: {organization}")
-            logger.debug(f"\t📊 Target resources: {len(target_resources)}")
+            self.logger.debug(f"\n📦 Processing: {package_title}")
+            self.logger.debug(f"\t🏢 Organization: {organization}")
+            self.logger.debug(f"\t📊 Target resources: {len(target_resources)}")
 
             # Create directory
             safe_title = sanitize_filename(package_title)
@@ -271,8 +188,8 @@ Filter: CSV and JSON formats only
             # Skip if already processed
             metadata_file = dataset_dir / "metadata.json"
             if metadata_file.exists():
-                logger.debug(f"\tDataset already processed: {package_title}")
-                await self.update_stats("successful_downloads")
+                self.logger.debug(f"\tDataset already processed: {package_title}")
+                await self.update_stats("files_downloaded")
                 return True
 
             dataset_dir.mkdir(exist_ok=True)
@@ -315,10 +232,10 @@ Filter: CSV and JSON formats only
                 # TODO: make checks here - optimization
                 if await download_with_semaphore(resource):
                     success = True
-                    await self.update_stats("successful_downloads")
+                    await self.update_stats("files_downloaded")
                     break  # Stop after first successful download
                 else:
-                    await self.update_stats("failed_downloads")
+                    await self.update_stats("errors")
 
             if success:
                 # Save metadata
@@ -335,13 +252,13 @@ Filter: CSV and JSON formats only
                     await self.dataset_db_buffer.add(package_meta)
             else:
                 # Clean up empty dataset
-                safe_delete(dataset_dir, logger)
+                safe_delete(dataset_dir, self.logger)
 
             return success
 
         except Exception as e:
-            logger.error(f"\t❌ Error processing package: {e}")
-            await self.update_stats("failed_downloads")
+            self.logger.error(f"\t❌ Error processing package: {e}")
+            await self.update_stats("errors")
             return False
 
     # 5.
@@ -367,7 +284,7 @@ Filter: CSV and JSON formats only
                     await self.update_stats("retries")
                     await asyncio.sleep(2**attempt)
                 else:
-                    logger.warning(
+                    self.logger.warning(
                         f"Failed to get package details for {package_id}: {e}"
                     )
                     return None
@@ -380,18 +297,15 @@ Filter: CSV and JSON formats only
         if not package_data:
             return None
 
-        await self.update_stats("total_packages_checked")
-
         # Check for target formats
         target_resources = []
         for resource in package_data.get("resources", []):
             resource_format = resource.get("format", "").lower()
-            if resource_format in self.target_formats:
+            if resource_format in {"csv", "json", "geojson"}:
                 target_resources.append(resource)
 
         if target_resources:
-            await self.update_stats("packages_with_target_formats")
-            await self.update_stats("total_target_resources", len(target_resources))
+            await self.update_stats("datasets_found", len(target_resources))
 
             return {
                 "package_id": package_id,
@@ -406,17 +320,17 @@ Filter: CSV and JSON formats only
         """Get list of all package IDs with retry logic"""
         for attempt in range(self.max_retries):
             try:
-                logger.debug("🔍 Fetching package list...")
+                self.logger.debug("🔍 Fetching package list...")
                 async with self.session.get(f"{self.api_url}/package_list") as response:
                     response.raise_for_status()
                     data = await response.json()
 
                     if not data["success"]:
-                        logger.error(f"API error: {data.get('error')}")
+                        self.logger.error(f"API error: {data.get('error')}")
                         return []
 
                     packages = data["result"]
-                    logger.info(f"📊 Total packages found: {len(packages)}")
+                    self.logger.info(f"📊 Total packages found: {len(packages)}")
                     return packages
 
             except Exception as e:
@@ -424,7 +338,7 @@ Filter: CSV and JSON formats only
                     await self.update_stats("retries")
                     await asyncio.sleep(2**attempt)  # Exponential backoff
                 else:
-                    logger.error(f"❌ Error fetching package list: {e}")
+                    self.logger.error(f"❌ Error fetching package list: {e}")
                     return []
         return []
 
@@ -437,7 +351,7 @@ Filter: CSV and JSON formats only
             if not all_packages:
                 return []
 
-            logger.debug("🔎 Analyzing packages for CSV/JSON/GeoJSON resources...")
+            self.logger.debug("🔎 Analyzing packages for CSV/JSON/GeoJSON resources...")
 
             # Process packages in batches
             target_packages = []
@@ -463,39 +377,43 @@ Filter: CSV and JSON formats only
 
                 # Progress update
                 checked = min(i + self.batch_size, len(all_packages))
-                logger.debug(f"\tChecked {checked}/{len(all_packages)} packages...")
+                self.logger.debug(
+                    f"\tChecked {checked}/{len(all_packages)} packages..."
+                )
 
-            logger.info(
+            self.logger.info(
                 f"✅ Found {len(target_packages)} packages with CSV/JSON/GeoJSON"
             )
             async with self.stats_lock:
-                logger.info(
-                    f"📋 Total target resources: {self.stats['total_target_resources']}"
+                self.logger.info(
+                    f"📋 Total target resources: {self.stats['datasets_found']}"
                 )
 
             return target_packages
 
         except Exception as e:
-            logger.error(f"❌ Error searching datasets: {e}")
+            self.logger.error(f"❌ Error searching datasets: {e}")
             return []
 
     # 1.
     async def process_all_datasets(self):
         """Main download method"""
-        logger.info("Start Leipzig CSV & JSON Data Downloader")
-        logger.debug(f"📁 Output directory: {self.output_dir.absolute()}")
-        logger.debug("=" * 50)
+        self.logger.info("Start Leipzig CSV & JSON Data Downloader")
+        self.logger.debug(f"📁 Output directory: {self.output_dir.absolute()}")
+        self.logger.debug("=" * 50)
 
         # Get target packages
         target_packages = await self.get_packages_with_target_formats()
 
         if not target_packages:
-            logger.error("❌ No packages found with CSV/JSON data")
+            self.logger.error("❌ No packages found with CSV/JSON data")
             return
 
         # Apply limit for testing
-        logger.debug(f"\n🚀 Starting download of {len(target_packages)} packages...")
-        logger.debug("-" * 50)
+        self.logger.debug(
+            f"\n🚀 Starting download of {len(target_packages)} packages..."
+        )
+        self.logger.debug("-" * 50)
 
         # Process packages in batches
         for i in range(0, len(target_packages), self.batch_size):
@@ -520,10 +438,11 @@ Filter: CSV and JSON formats only
         if self.is_store:
             await self.dataset_db_buffer.flush()
 
-        # Final report
-        logger.debug("\n" + "=" * 50)
-        logger.info("🎉 Download completed!")
-        await self.create_summary_report()
+        # STATS
+        self.logger.info("🎉 Download completed!")
+        await self.print_final_report()
+
+    # endregion
 
 
 # region MAIN
@@ -578,7 +497,7 @@ async def async_main():
         logging.getLogger().setLevel(logging.INFO)
 
     try:
-        async with LeipzigOpenDataDownloader(
+        async with Leipzig(
             output_dir=args.output,
             max_workers=args.max_workers,
             delay=args.delay,
@@ -590,11 +509,11 @@ async def async_main():
         return 0
 
     except KeyboardInterrupt:
-        logger.warning("⚠️ Download interrupted by user")
+        print("⚠️ Download interrupted by user")
         return 130  # Standard for Ctrl+C
 
     except Exception as e:
-        logger.error(f"❌ An error occurred: {e}")
+        print(f"❌ An error occurred: {e}")
         if args.debug:
             import traceback
 

@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from datetime import datetime
 from pathlib import Path
 from typing import Set, Dict, Any, Optional
 import asyncio
@@ -11,8 +12,6 @@ from src.domain.services.dataset_buffer import DatasetDBBuffer
 from src.infrastructure.mongo_db import get_mongo_database
 from src.vector_search.vector_db import get_vector_db
 from src.vector_search.vector_db_buffer import VectorDBBuffer
-
-logger = logging.getLogger(__name__)
 
 
 class BaseDataDownloader(ABC):
@@ -60,17 +59,16 @@ class BaseDataDownloader(ABC):
         self.connection_limit = connection_limit
         self.connection_limit_per_host = connection_limit_per_host
 
-        # TODO: Statistics
-        # self.stats = {
-        #     "datasets_found": 0,
-        #     "datasets_processed": 0,
-        #     "files_downloaded": 0,
-        #     "errors": 0,
-        #     "failed_datasets": set(),
-        #     "start_time": datetime.now(),
-        #     "cache_hits": 0,
-        #     "retries": 0,
-        # }
+        self.stats = {
+            "datasets_found": 0,
+            "datasets_processed": 0,
+            "files_downloaded": 0,
+            "errors": 0,
+            "start_time": datetime.now(),
+            "cache_hits": 0,
+            "retries": 0,
+            "failed_datasets": set(),
+        }
         self.stats_lock = asyncio.Lock()
 
         # Cache for metadata to avoid redundant API calls
@@ -80,6 +78,7 @@ class BaseDataDownloader(ABC):
         # Track failed URLs for retry optimization
         self.failed_urls: Set[str] = set()
         self.failed_urls_lock = asyncio.Lock()
+        self.logger = logging.getLogger(__name__)
 
     async def __aenter__(self):
         """Async context manager entry with optimized session"""
@@ -130,13 +129,13 @@ class BaseDataDownloader(ABC):
             try:
                 await self.vector_db_buffer.flush()
             except Exception as e:
-                logger.error(f"Error flushing VECTOR buffer: {e}")
+                self.logger.error(f"Error flushing VECTOR buffer: {e}")
 
         if self.dataset_db_buffer:
             try:
                 await self.dataset_db_buffer.flush()
             except Exception as e:
-                logger.error(f"Error flushing MONGO buffer: {e}")
+                self.logger.error(f"Error flushing MONGO buffer: {e}")
 
         # Close session
         if self.session:
@@ -161,6 +160,8 @@ class BaseDataDownloader(ABC):
 
     # endregion
 
+    # region LOGIC STEPS
+
     @abstractmethod
     async def process_all_datasets(self):
         """
@@ -169,7 +170,10 @@ class BaseDataDownloader(ABC):
         """
         pass
 
+    # endregion
+
     # region CACHE
+    # TODO: check usability
     async def add_to_cache(self, key: str, value: Any):
         """
         Thread-safe cache addition
@@ -197,26 +201,147 @@ class BaseDataDownloader(ABC):
     # endregion
 
     # region STATS
-    # TODO: add STATS
+    async def update_stats(self, key: str, value: Any = 1, operation: str = "add"):
+        """
+        Thread-safe statistics update
 
-    # async def update_stats(self, key: str, value: Any = 1, operation: str = "add"):
-    #     """
-    #     Thread-safe statistics update
-    #
-    #     Args:
-    #         key: Statistics key to update
-    #         value: Value to add/set
-    #         operation: 'add' to increment, 'set' to replace
-    #     """
-    #     async with self.stats_lock:
-    #         if operation == "add":
-    #             if key in self.stats:
-    #                 if isinstance(self.stats[key], (int, float)):
-    #                     self.stats[key] += value
-    #                 elif isinstance(self.stats[key], set):
-    #                     self.stats[key].add(value)
-    #         elif operation == "set":
-    #             self.stats[key] = value
+        Args:
+            key: Statistics key to update
+            value: Value to add/set
+            operation: 'add' to increment, 'set' to replace
+        """
+        async with self.stats_lock:
+            if operation == "add":
+                if key in self.stats:
+                    if isinstance(self.stats[key], (int, float)):
+                        self.stats[key] += value
+                    elif isinstance(self.stats[key], set):
+                        self.stats[key].add(value)
+            elif operation == "set":
+                self.stats[key] = value
+
+    async def print_progress(self, current: int = None, total: int = None):
+        """Unified progress reporting"""
+        async with self.stats_lock:
+            current = current or self.stats["datasets_processed"]
+            total = total or self.stats["datasets_found"]
+
+            if total > 0:
+                percentage = (current / total) * 100
+                elapsed = (datetime.now() - self.stats["start_time"]).total_seconds()
+                rate = current / elapsed if elapsed > 0 else 0
+                eta = (total - current) / rate if rate > 0 else 0
+
+                metrics = [
+                    f"Progress: {current}/{total} ({percentage:.1f}%)",
+                    f"Files: {self.stats['files_downloaded']}",
+                    f"Errors: {self.stats['errors']}",
+                ]
+
+                if "layers_downloaded" in self.stats:
+                    metrics.append(f"Layers: {self.stats['layers_downloaded']}")
+                if "playwright_downloads" in self.stats:
+                    metrics.append(f"Playwright: {self.stats['playwright_downloads']}")
+
+                metrics.extend([f"Rate: {rate:.1f} items/s", f"ETA: {eta:.0f}s"])
+
+                self.logger.info("\t".join(metrics))
+
+    async def progress_reporter(self):
+        while True:
+            await asyncio.sleep(5)  # More frequent updates
+            async with self.stats_lock:
+                if self.stats["datasets_processed"] >= self.stats["datasets_found"]:
+                    break
+            await self.print_progress()
+
+    async def print_final_report(self):
+        """Print comprehensive final report with statistics"""
+        async with self.stats_lock:
+            # Calculate final metrics
+            elapsed = (datetime.now() - self.stats["start_time"]).total_seconds()
+            processed = self.stats["datasets_processed"]
+            total = self.stats["datasets_found"]
+            files = self.stats["files_downloaded"]
+            errors = self.stats["errors"]
+            cache_hits = self.stats["cache_hits"]
+            retries = self.stats["retries"]
+            failed_count = len(self.stats["failed_datasets"])
+
+            # Calculate rates and percentages
+            success_rate = (
+                ((processed - failed_count) / processed * 100) if processed > 0 else 0
+            )
+            cache_hit_rate = (
+                (cache_hits / (cache_hits + files) * 100)
+                if (cache_hits + files) > 0
+                else 0
+            )
+            avg_rate = processed / elapsed if elapsed > 0 else 0
+
+            # Format elapsed time
+            hours, remainder = divmod(int(elapsed), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+            self.logger.debug("=" * 60)
+            self.logger.debug("FINAL REPORT")
+            self.logger.debug("=" * 60)
+            self.logger.debug(f"Total runtime: {time_str}")
+            self.logger.debug(f"Datasets found: {total}")
+            self.logger.debug(
+                f"Datasets processed: {processed}/{total} ({processed / total * 100:.1f}%)"
+                if total > 0
+                else "Datasets processed: 0"
+            )
+            self.logger.debug(f"Files downloaded: {files}")
+            self.logger.debug("-" * 60)
+            self.logger.debug("PERFORMANCE METRICS:")
+            self.logger.debug(f"Average processing rate: {avg_rate:.2f} datasets/s")
+            self.logger.debug(
+                f"Cache hit rate: {cache_hit_rate:.1f}% ({cache_hits} hits)"
+            )
+            self.logger.debug(f"Retry attempts: {retries}")
+
+            # Error analysis
+            self.logger.debug("-" * 60)
+            self.logger.debug("ERROR ANALYSIS:")
+            self.logger.debug(f"Total errors: {errors}")
+            self.logger.debug(f"Failed datasets: {failed_count}")
+            self.logger.debug(f"Success rate: {success_rate:.1f}%")
+
+            if 0 < failed_count <= 10:
+                self.logger.debug("Failed dataset IDs:")
+                for dataset_id in self.stats["failed_datasets"]:
+                    self.logger.debug(f"  - {dataset_id}")
+            elif failed_count > 10:
+                self.logger.debug(
+                    f"Failed dataset IDs (showing first 10 of {failed_count}):"
+                )
+                for i, dataset_id in enumerate(
+                    list(self.stats["failed_datasets"])[:10]
+                ):
+                    self.logger.debug(f"  - {dataset_id}")
+
+            # Get additional metrics from child classes
+            additional_metrics = await self.get_additional_metrics()
+            if additional_metrics:
+                self.logger.debug("-" * 60)
+                self.logger.debug("ADDITIONAL METRICS:")
+                for key in additional_metrics:
+                    value = self.stats[key]
+                    self.logger.debug(f"{key}: {value}")
+
+            self.logger.debug("=" * 60)
+
+    async def get_additional_metrics(self) -> dict:
+        """
+        Override in child classes to provide additional metrics for the final report.
+
+        Returns:
+            Dictionary with metric names as keys and formatted values as strings
+        """
+        pass
 
     # endregion
 

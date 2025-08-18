@@ -28,6 +28,7 @@ logger = get_prefixed_logger(__name__, "DRESDEN")
 class DresdenOpenDataDownloader:
     """Optimized async class for downloading Dresden open data"""
 
+    # region INIT
     def __init__(
         self,
         output_dir: str = "dresden",
@@ -151,6 +152,32 @@ class DresdenOpenDataDownloader:
             except Exception as e:
                 logger.error(f"Error flushing MONGO buffer: {e}")
 
+    # endregion
+
+    # region STATS
+    async def print_progress(self):
+        """Enhanced progress reporting"""
+        async with self.stats_lock:
+            processed = self.stats["datasets_processed"]
+            total = self.stats["datasets_found"]
+            files = self.stats["files_downloaded"]
+            errors = self.stats["errors"]
+            cache_hits = self.stats["cache_hits"]
+            retries = self.stats["retries"]
+
+            if total > 0:
+                percentage = (processed / total) * 100
+                elapsed = (datetime.now() - self.stats["start_time"]).total_seconds()
+                rate = processed / elapsed if elapsed > 0 else 0
+                eta = (total - processed) / rate if rate > 0 else 0
+
+                logger.info(
+                    f"Progress: {processed}/{total} ({percentage:.1f}%)\t"
+                    f"Files: {files}\tErrors: {errors}\t"
+                    f"Cache hits: {cache_hits}\tRetries: {retries}\t"
+                    f"Rate: {rate:.1f} datasets/s\tETA: {eta:.0f}s"
+                )
+
     async def update_stats(self, field: str, increment: int = 1):
         """Thread-safe statistics update"""
         async with self.stats_lock:
@@ -159,163 +186,101 @@ class DresdenOpenDataDownloader:
                 return
             self.stats[field] += increment
 
-    async def search_dresden_datasets(self, limit: int = 100, offset: int = 0) -> Dict:
+    async def progress_reporter(self):
+        while True:
+            await asyncio.sleep(5)  # Report every 5 seconds
+            async with self.stats_lock:
+                if self.stats["datasets_processed"] >= self.stats["datasets_found"]:
+                    break
+            await self.print_progress()
+
+    # endregion
+
+    # 8.
+    async def download_file(self, url: str, filename: str, dataset_dir: Path) -> bool:
         """
-        Search Dresden datasets via API with retry logic
+        Download file with optimized async streaming
 
         Args:
-            limit: Number of results per request (max 100)
-            offset: Offset for pagination
+            url: File URL
+            filename: Filename to save
+            dataset_dir: Dataset directory
 
         Returns:
-            API response with datasets
+            True if file successfully downloaded
         """
-        params = {
-            "type": "solr",
-            "query": "rdfType:http\\://www.w3.org/ns/dcat#Dataset AND public:true AND resource:*dresden*",
-            "limit": min(limit, 100),
-            "offset": offset,
-            "sort": "modified desc",
-        }
+        filepath = dataset_dir / filename
+
+        # Check if file already exists
+        if filepath.exists() and filepath.stat().st_size > 0:
+            logger.debug(f"File already exists: {filepath}")
+            return True
+
+        # Check if URL previously failed
+        async with self.failed_urls_lock:
+            if url in self.failed_urls:
+                return False
 
         for attempt in range(self.max_retries):
             try:
-                logger.debug(f"Searching datasets: offset={offset}, limit={limit}")
-                async with self.session.get(
-                    self.search_endpoint, params=params
-                ) as response:
+                logger.debug(f"Downloading: {url}")
+                async with self.session.get(url) as response:
                     response.raise_for_status()
-                    return await response.json()
+
+                    # Check content type and length
+                    content_type = response.headers.get("content-type", "").lower()
+                    content_length = response.headers.get("content-length")
+
+                    if (
+                        content_length
+                        and int(content_length) < 100
+                        and "html" in content_type
+                    ):
+                        logger.warning(f"Response appears to be an error page: {url}")
+                        async with self.failed_urls_lock:
+                            self.failed_urls.add(url)
+                        return False
+
+                    # Create temporary file for atomic write
+                    temp_path = filepath.with_suffix(filepath.suffix + ".tmp")
+
+                    # Download with streaming
+                    async with aiofiles.open(temp_path, "wb") as f:
+                        async for chunk in response.fields.iter_chunked(
+                            65536
+                        ):  # 64KB chunks
+                            await f.write(chunk)
+
+                    # Verify file is not empty
+                    if temp_path.stat().st_size == 0:
+                        logger.warning(f"Downloaded file is empty: {filepath}")
+                        temp_path.unlink()
+                        async with self.failed_urls_lock:
+                            self.failed_urls.add(url)
+                        return False
+
+                    # Atomic rename
+                    temp_path.rename(filepath)
+
+                    logger.debug(
+                        f"File saved: {filepath} ({filepath.stat().st_size} bytes)"
+                    )
+                    await self.update_stats("files_downloaded")
+                    return True
+
             except Exception as e:
                 if attempt < self.max_retries - 1:
                     await self.update_stats("retries")
-                    await asyncio.sleep(2**attempt)  # Exponential backoff
+                    await asyncio.sleep(2**attempt)
                 else:
-                    logger.error(f"Error searching datasets: {e}")
-                    return {}
-        return {}
+                    logger.error(f"Error downloading {url}: {e}")
+                    await self.update_stats("errors")
+                    async with self.failed_urls_lock:
+                        self.failed_urls.add(url)
+                    return False
+        return False
 
-    async def get_dataset_metadata(
-        self, context_id: str, entry_id: str
-    ) -> Optional[Dict]:
-        """
-        Get metadata for specific dataset with caching
-
-        Args:
-            context_id: Context ID
-            entry_id: Entry ID
-
-        Returns:
-            Dataset metadata
-        """
-        cache_key = f"{context_id}/{entry_id}"
-
-        # Check cache first
-        async with self.cache_lock:
-            if cache_key in self.metadata_cache:
-                await self.update_stats("cache_hits")
-                return self.metadata_cache[cache_key]
-
-        # Try different URL variants to get metadata
-        urls_to_try = [
-            f"{self.base_url}/store/{context_id}/metadata/{entry_id}",
-            f"{self.base_url}/store/{context_id}/entry/{entry_id}",
-            f"{self.base_url}/store/{context_id}/resource/{entry_id}",
-        ]
-
-        for url in urls_to_try:
-            try:
-                async with self.session.get(url) as response:
-                    if response.status == 200:
-                        metadata = await response.json()
-                        # Cache successful result
-                        async with self.cache_lock:
-                            self.metadata_cache[cache_key] = metadata
-                        return metadata
-            except Exception:
-                continue
-
-        logger.warning(f"Could not get additional metadata for {context_id}/{entry_id}")
-        return None
-
-    async def extract_download_urls(
-        self, dataset_metadata: Dict, dataset_uri: str
-    ) -> List[Dict]:
-        """
-        Extract download URLs from metadata using direct content.csv approach
-
-        Args:
-            dataset_metadata: Dataset metadata
-            dataset_uri: URI of the dataset
-
-        Returns:
-            List of dictionaries with download file information
-        """
-        downloads = []
-
-        if not dataset_uri:
-            logger.warning("No dataset URI provided")
-            return downloads
-
-        # Formats to try in priority order
-        format_attempts = [
-            {"suffix": "/content.json", "format": "application/json", "ext": ".json"},
-            {
-                "suffix": "/content.json",
-                "format": "application/json",
-                "ext": ".geojson",
-            },
-            {"suffix": "/content.csv", "format": "text/csv", "ext": ".csv"},
-            # {"suffix": "/content.xml", "format": "application/xml", "ext": ".xml"},
-            # {
-            #     "suffix": "/content.xlsx",
-            #     "format": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            #     "ext": ".xlsx",
-            # },
-        ]
-
-        # Check each format concurrently
-        check_tasks = []
-        for format_info in format_attempts:
-            url = f"{dataset_uri}{format_info['suffix']}"
-            task = self._check_url_availability(url, format_info)
-            check_tasks.append(task)
-
-        results = await asyncio.gather(*check_tasks, return_exceptions=True)
-
-        # Add successful results
-        for result in results:
-            if isinstance(result, dict) and result:
-                downloads.append(result)
-
-        # Fallback: try to extract from distribution metadata if no direct files found
-        if not downloads:
-            logger.debug("No direct content files found, trying distribution metadata")
-            downloads = self.extract_from_distributions(dataset_metadata)
-
-        logger.debug(f"Found {len(downloads)} files for download")
-        return downloads
-
-    async def _check_url_availability(
-        self, url: str, format_info: Dict
-    ) -> Optional[Dict]:
-        """Check if a URL is available and return download info"""
-        try:
-            logger.debug(f"Checking availability: {url}")
-            async with self.session.head(
-                url, timeout=ClientTimeout(total=10)
-            ) as response:
-                if response.status == 200:
-                    return {
-                        "url": url,
-                        "title": "content",
-                        "format": format_info["format"],
-                        "extension": format_info["ext"],
-                    }
-        except Exception:
-            pass
-        return None
-
+    # 7.
     @staticmethod
     def extract_from_distributions(metadata: Dict) -> List[Dict]:
         """
@@ -409,89 +374,87 @@ class DresdenOpenDataDownloader:
 
         return downloads
 
-    async def download_file(self, url: str, filename: str, dataset_dir: Path) -> bool:
+    # 6.
+    async def _check_url_availability(
+        self, url: str, format_info: Dict
+    ) -> Optional[Dict]:
+        """Check if a URL is available and return download info"""
+        try:
+            logger.debug(f"Checking availability: {url}")
+            async with self.session.head(
+                url, timeout=ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    return {
+                        "url": url,
+                        "title": "content",
+                        "format": format_info["format"],
+                        "extension": format_info["ext"],
+                    }
+        except Exception:
+            pass
+        return None
+
+    # 5.
+    async def extract_download_urls(
+        self, dataset_metadata: Dict, dataset_uri: str
+    ) -> List[Dict]:
         """
-        Download file with optimized async streaming
+        Extract download URLs from metadata using direct content.csv approach
 
         Args:
-            url: File URL
-            filename: Filename to save
-            dataset_dir: Dataset directory
+            dataset_metadata: Dataset metadata
+            dataset_uri: URI of the dataset
 
         Returns:
-            True if file successfully downloaded
+            List of dictionaries with download file information
         """
-        filepath = dataset_dir / filename
+        downloads = []
 
-        # Check if file already exists
-        if filepath.exists() and filepath.stat().st_size > 0:
-            logger.debug(f"File already exists: {filepath}")
-            return True
+        if not dataset_uri:
+            logger.warning("No dataset URI provided")
+            return downloads
 
-        # Check if URL previously failed
-        async with self.failed_urls_lock:
-            if url in self.failed_urls:
-                return False
+        # Formats to try in priority order
+        format_attempts = [
+            {"suffix": "/content.json", "format": "application/json", "ext": ".json"},
+            {
+                "suffix": "/content.json",
+                "format": "application/json",
+                "ext": ".geojson",
+            },
+            {"suffix": "/content.csv", "format": "text/csv", "ext": ".csv"},
+            # {"suffix": "/content.xml", "format": "application/xml", "ext": ".xml"},
+            # {
+            #     "suffix": "/content.xlsx",
+            #     "format": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            #     "ext": ".xlsx",
+            # },
+        ]
 
-        for attempt in range(self.max_retries):
-            try:
-                logger.debug(f"Downloading: {url}")
-                async with self.session.get(url) as response:
-                    response.raise_for_status()
+        # Check each format concurrently
+        check_tasks = []
+        for format_info in format_attempts:
+            url = f"{dataset_uri}{format_info['suffix']}"
+            task = self._check_url_availability(url, format_info)
+            check_tasks.append(task)
 
-                    # Check content type and length
-                    content_type = response.headers.get("content-type", "").lower()
-                    content_length = response.headers.get("content-length")
+        results = await asyncio.gather(*check_tasks, return_exceptions=True)
 
-                    if (
-                        content_length
-                        and int(content_length) < 100
-                        and "html" in content_type
-                    ):
-                        logger.warning(f"Response appears to be an error page: {url}")
-                        async with self.failed_urls_lock:
-                            self.failed_urls.add(url)
-                        return False
+        # Add successful results
+        for result in results:
+            if isinstance(result, dict) and result:
+                downloads.append(result)
 
-                    # Create temporary file for atomic write
-                    temp_path = filepath.with_suffix(filepath.suffix + ".tmp")
+        # Fallback: try to extract from distribution metadata if no direct files found
+        if not downloads:
+            logger.debug("No direct content files found, trying distribution metadata")
+            downloads = self.extract_from_distributions(dataset_metadata)
 
-                    # Download with streaming
-                    async with aiofiles.open(temp_path, "wb") as f:
-                        async for chunk in response.fields.iter_chunked(
-                            65536
-                        ):  # 64KB chunks
-                            await f.write(chunk)
+        logger.debug(f"Found {len(downloads)} files for download")
+        return downloads
 
-                    # Verify file is not empty
-                    if temp_path.stat().st_size == 0:
-                        logger.warning(f"Downloaded file is empty: {filepath}")
-                        temp_path.unlink()
-                        async with self.failed_urls_lock:
-                            self.failed_urls.add(url)
-                        return False
-
-                    # Atomic rename
-                    temp_path.rename(filepath)
-
-                    logger.debug(
-                        f"File saved: {filepath} ({filepath.stat().st_size} bytes)"
-                    )
-                    await self.update_stats("files_downloaded")
-                    return True
-
-            except Exception as e:
-                if attempt < self.max_retries - 1:
-                    await self.update_stats("retries")
-                    await asyncio.sleep(2**attempt)
-                else:
-                    logger.error(f"Error downloading {url}: {e}")
-                    await self.update_stats("errors")
-                    async with self.failed_urls_lock:
-                        self.failed_urls.add(url)
-                    return False
-        return False
-
+    # 4.
     async def process_dataset(self, dataset_info: Dict) -> bool:
         """Process a single dataset with optimized async operations"""
         await asyncio.sleep(self.delay)  # Minimal delay to respect server
@@ -607,9 +570,7 @@ class DresdenOpenDataDownloader:
         sorted_downloads = json_downloads + other_downloads
 
         # Download files with limited concurrency
-        download_semaphore = asyncio.Semaphore(
-            3
-        )  # Limit concurrent downloads per dataset
+        download_semaphore = asyncio.Semaphore(self.max_workers)
 
         async def download_with_semaphore(_download_info):
             async with download_semaphore:
@@ -649,6 +610,44 @@ class DresdenOpenDataDownloader:
         await self.update_stats("datasets_processed")
         return success
 
+    # 3.
+    async def search_dresden_datasets(self, limit: int = 100, offset: int = 0) -> Dict:
+        """
+        Search Dresden datasets via API with retry logic
+
+        Args:
+            limit: Number of results per request (max 100)
+            offset: Offset for pagination
+
+        Returns:
+            API response with datasets
+        """
+        params = {
+            "type": "solr",
+            "query": "rdfType:http\\://www.w3.org/ns/dcat#Dataset AND public:true AND resource:*dresden*",
+            "limit": min(limit, 100),
+            "offset": offset,
+            "sort": "modified desc",
+        }
+
+        for attempt in range(self.max_retries):
+            try:
+                logger.debug(f"Searching datasets: offset={offset}, limit={limit}")
+                async with self.session.get(
+                    self.search_endpoint, params=params
+                ) as response:
+                    response.raise_for_status()
+                    return await response.json()
+            except Exception as e:
+                if attempt < self.max_retries - 1:
+                    await self.update_stats("retries")
+                    await asyncio.sleep(2**attempt)  # Exponential backoff
+                else:
+                    logger.error(f"Error searching datasets: {e}")
+                    return {}
+        return {}
+
+    # 2.
     async def collect_all_datasets(self) -> List[Dict]:
         """Collect all datasets from the API"""
         all_datasets = []
@@ -688,29 +687,7 @@ class DresdenOpenDataDownloader:
 
         return all_datasets
 
-    async def print_progress(self):
-        """Enhanced progress reporting"""
-        async with self.stats_lock:
-            processed = self.stats["datasets_processed"]
-            total = self.stats["datasets_found"]
-            files = self.stats["files_downloaded"]
-            errors = self.stats["errors"]
-            cache_hits = self.stats["cache_hits"]
-            retries = self.stats["retries"]
-
-            if total > 0:
-                percentage = (processed / total) * 100
-                elapsed = (datetime.now() - self.stats["start_time"]).total_seconds()
-                rate = processed / elapsed if elapsed > 0 else 0
-                eta = (total - processed) / rate if rate > 0 else 0
-
-                logger.info(
-                    f"Progress: {processed}/{total} ({percentage:.1f}%)\t"
-                    f"Files: {files}\tErrors: {errors}\t"
-                    f"Cache hits: {cache_hits}\tRetries: {retries}\t"
-                    f"Rate: {rate:.1f} datasets/s\tETA: {eta:.0f}s"
-                )
-
+    # 1.
     async def download_all_datasets(self):
         """Download all datasets with optimized async processing"""
         logger.info("Starting optimized Dresden Open Data download")
@@ -726,22 +703,11 @@ class DresdenOpenDataDownloader:
             f"Starting download of {len(all_datasets)} datasets with {self.max_workers} workers"
         )
 
-        # Progress reporting task
-        async def progress_reporter():
-            while True:
-                await asyncio.sleep(5)  # Report every 5 seconds
-                async with self.stats_lock:
-                    if self.stats["datasets_processed"] >= self.stats["datasets_found"]:
-                        break
-                await self.print_progress()
+        progress_task = asyncio.create_task(self.progress_reporter())
 
-        progress_task = asyncio.create_task(progress_reporter())
-
-        # Process in batches to avoid overwhelming memory
         for i in range(0, len(all_datasets), self.batch_size):
             batch = all_datasets[i : i + self.batch_size]
 
-            # Create semaphore for this batch
             semaphore = asyncio.Semaphore(self.max_workers)
 
             async def process_with_semaphore(dataset: Dict):
@@ -797,6 +763,7 @@ class DresdenOpenDataDownloader:
         logger.debug(f"Data saved to: {self.output_dir.absolute()}")
 
 
+# region MAIN
 async def async_main():
     """Async main function with optimized settings"""
     import argparse
@@ -884,3 +851,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+# endregion

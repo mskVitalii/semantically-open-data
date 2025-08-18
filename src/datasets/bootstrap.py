@@ -3,9 +3,9 @@ import time
 from pathlib import Path
 
 from src.datasets.berlin import BerlinOpenDataDownloader
-from src.datasets.chemnitz import ChemnitzDataDownloader
+from src.datasets.chemnitz import ChemnitzOpenDataDownloader
 from src.datasets.dresden import DresdenOpenDataDownloader
-from src.datasets.leipzig import LeipzigCSVJSONDownloader
+from src.datasets.leipzig import LeipzigOpenDataDownloader
 from src.infrastructure.logger import get_prefixed_logger
 from src.infrastructure.paths import PROJECT_ROOT
 from src.utils.datasets_utils import safe_delete
@@ -21,14 +21,10 @@ async def download_berlin():
 
     async with BerlinOpenDataDownloader(
         output_dir=path,
-        max_workers=20,
-        delay=0.05,
-        batch_size=50,
-        connection_limit=100,
         is_embeddings=True,
         is_store=True,
     ) as downloader:
-        await downloader.download_all_datasets()
+        await downloader.process_all_datasets()
 
     elapsed = time.perf_counter() - start_time
     logger.info(f"✅ Berlin download completed in {elapsed:.2f} seconds!")
@@ -45,17 +41,13 @@ async def download_chemnitz():
     safe_delete(path, logger)
     start_time = time.perf_counter()
 
-    async with ChemnitzDataDownloader(
+    async with ChemnitzOpenDataDownloader(
         csv_file,
         output_dir=path,
-        max_workers=20,
-        delay=0.05,
-        batch_size=50,
-        connection_limit=100,
         is_embeddings=True,
         is_store=True,
     ) as downloader:
-        await downloader.download_all_datasets()
+        await downloader.process_all_datasets()
 
     elapsed = time.perf_counter() - start_time
     logger.info(f"✅ Chemnitz download completed in {elapsed:.2f} seconds!")
@@ -67,16 +59,12 @@ async def download_leipzig():
     safe_delete(path, logger)
     start_time = time.perf_counter()
 
-    async with LeipzigCSVJSONDownloader(
+    async with LeipzigOpenDataDownloader(
         output_dir=path,
-        max_workers=20,
-        delay=0.05,
-        batch_size=50,
-        connection_limit=100,
         is_embeddings=True,
         is_store=True,
     ) as downloader:
-        await downloader.download_all_datasets()
+        await downloader.process_all_datasets()
 
     elapsed = time.perf_counter() - start_time
     logger.info(f"✅ Leipzig download completed in {elapsed:.2f} seconds!")
@@ -90,14 +78,10 @@ async def download_dresden():
 
     async with DresdenOpenDataDownloader(
         output_dir=path,
-        max_workers=20,
-        delay=0.05,
-        batch_size=50,
-        connection_limit=100,
         is_embeddings=True,
         is_store=True,
     ) as downloader:
-        await downloader.download_all_datasets()
+        await downloader.process_all_datasets()
 
     elapsed = time.perf_counter() - start_time
     logger.info(f"✅ Dresden download completed in {elapsed:.2f} seconds!")

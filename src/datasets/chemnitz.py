@@ -6,24 +6,18 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Dict, List, Optional
 
-import aiohttp
 import aiofiles
-from aiohttp import ClientTimeout, TCPConnector
 
+from src.datasets.base_data_downloader import BaseDataDownloader
 from src.datasets.datasets_metadata import (
     DatasetMetadataWithContent,
 )
-from src.domain.repositories.dataset_repository import get_dataset_repository
-from src.domain.services.dataset_buffer import DatasetDBBuffer
-from src.infrastructure.mongo_db import get_mongo_database
 from src.utils.datasets_utils import sanitize_filename, safe_delete
 from src.infrastructure.logger import get_prefixed_logger
 from src.utils.embeddings_utils import extract_data_content
 from src.utils.file import save_file_with_task
-from src.vector_search.vector_db import get_vector_db
-from src.vector_search.vector_db_buffer import VectorDBBuffer
 
 if TYPE_CHECKING:
     from _typeshed import SupportsWrite  # noqa: F401
@@ -31,7 +25,7 @@ if TYPE_CHECKING:
 logger = get_prefixed_logger(__name__, "CHEMNITZ")
 
 
-class ChemnitzDataDownloader:
+class ChemnitzOpenDataDownloader(BaseDataDownloader):  # noqa: F821
     """Optimized async class for downloading Chemnitz open data"""
 
     # region INIT
@@ -64,18 +58,18 @@ class ChemnitzDataDownloader:
             batch_size: Size of dataset batches to process
             max_retries: Maximum retry attempts for failed requests
         """
+        super().__init__(
+            output_dir,
+            max_workers,
+            delay,
+            is_embeddings,
+            is_store,
+            connection_limit,
+            connection_limit_per_host,
+            batch_size,
+            max_retries,
+        )
         self.csv_file_path = csv_file_path
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(exist_ok=True)
-        self.max_workers = max_workers
-        self.delay = delay
-        self.batch_size = batch_size
-        self.max_retries = max_retries
-        self.session = None
-
-        # Connection configuration
-        self.connection_limit = connection_limit
-        self.connection_limit_per_host = connection_limit_per_host
 
         # Statistics
         self.stats = {
@@ -89,78 +83,6 @@ class ChemnitzDataDownloader:
             "cache_hits": 0,
             "retries": 0,
         }
-        self.stats_lock = asyncio.Lock()
-
-        # Cache for service info to avoid redundant API calls
-        self.service_cache = {}
-        self.cache_lock = asyncio.Lock()
-
-        # Track failed URLs for retry optimization
-        self.failed_urls: Set[str] = set()
-        self.failed_urls_lock = asyncio.Lock()
-
-        # Async VectorDB & Dataset will be initialized in __aenter__
-        self.is_embeddings = is_embeddings
-        self.is_store = is_store
-        self.vector_db_buffer: VectorDBBuffer | None = None
-        self.dataset_db_buffer: DatasetDBBuffer | None = None
-
-    async def __aenter__(self):
-        """Async context manager entry with optimized session"""
-        # Create connector with connection pooling
-        connector = TCPConnector(
-            limit=self.connection_limit,
-            limit_per_host=self.connection_limit_per_host,
-            ttl_dns_cache=300,  # DNS cache for 5 minutes
-            enable_cleanup_closed=True,
-            force_close=True,
-        )
-
-        # Optimized timeout settings
-        timeout = ClientTimeout(
-            total=60,  # Total timeout
-            connect=10,  # Connection timeout
-            sock_read=30,  # Socket read timeout
-        )
-
-        self.session = aiohttp.ClientSession(
-            connector=connector,
-            timeout=timeout,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept-Encoding": "gzip, deflate",  # Enable compression
-            },
-        )
-
-        # Initialize async VectorDB if embeddings are enabled
-        if self.is_embeddings:
-            vector_db = await get_vector_db(use_grpc=True)
-            self.vector_db_buffer = VectorDBBuffer(vector_db)
-
-        if self.is_store:
-            database = await get_mongo_database()
-            dataset_db = await get_dataset_repository(database=database)
-            self.dataset_db_buffer: DatasetDBBuffer | None = DatasetDBBuffer(dataset_db)
-
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit"""
-        # Flush embeddings buffer if it exists
-        if self.vector_db_buffer:
-            try:
-                await self.vector_db_buffer.flush()
-            except Exception as e:
-                logger.error(f"Error flushing VECTOR buffer: {e}")
-
-        if self.dataset_db_buffer:
-            try:
-                await self.dataset_db_buffer.flush()
-            except Exception as e:
-                logger.error(f"Error flushing MONGO buffer: {e}")
-
-        if self.session:
-            await self.session.close()
 
     # endregion
 
@@ -288,9 +210,9 @@ class ChemnitzDataDownloader:
         """Get service info with caching and retry logic"""
         # Check cache first
         async with self.cache_lock:
-            if service_url in self.service_cache:
+            if service_url in self.cache:
                 await self.update_stats("cache_hits")
-                return self.service_cache[service_url]
+                return self.cache[service_url]
 
         # Check if URL previously failed
         async with self.failed_urls_lock:
@@ -307,7 +229,7 @@ class ChemnitzDataDownloader:
 
                     # Cache successful result
                     async with self.cache_lock:
-                        self.service_cache[service_url] = data
+                        self.cache[service_url] = data
 
                     return data
 
@@ -480,7 +402,7 @@ class ChemnitzDataDownloader:
         return datasets
 
     # 1.
-    async def download_all_datasets(self):
+    async def process_all_datasets(self):
         """Download all datasets with optimized batching and concurrency"""
         logger.info("Starting optimized Chemnitz Open Data download")
 
@@ -620,7 +542,7 @@ async def async_main():
         logging.getLogger().setLevel(logging.INFO)
 
     try:
-        async with ChemnitzDataDownloader(
+        async with ChemnitzOpenDataDownloader(
             csv_file,
             output_dir=args.output,
             max_workers=args.max_workers,
@@ -631,7 +553,7 @@ async def async_main():
             batch_size=args.batch_size,
             max_retries=args.max_retries,
         ) as downloader:
-            await downloader.download_all_datasets()
+            await downloader.process_all_datasets()
         return 0
 
     except KeyboardInterrupt:

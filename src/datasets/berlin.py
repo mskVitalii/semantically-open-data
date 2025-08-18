@@ -10,13 +10,11 @@ import aiohttp
 import aiofiles
 from playwright.async_api import async_playwright, ViewportSize, Error
 
+from src.datasets.base_data_downloader import BaseDataDownloader
 from src.datasets.datasets_metadata import (
     DatasetMetadataWithContent,
 )
-from src.domain.repositories.dataset_repository import get_dataset_repository
-from src.domain.services.dataset_buffer import DatasetDBBuffer
 from src.infrastructure.logger import get_prefixed_logger
-from src.infrastructure.mongo_db import get_mongo_database
 from src.utils.datasets_utils import (
     safe_delete,
     sanitize_filename,
@@ -24,8 +22,6 @@ from src.utils.datasets_utils import (
 )
 from src.utils.embeddings_utils import extract_data_content
 from src.utils.file import save_file_with_task
-from src.vector_search.vector_db import get_vector_db
-from src.vector_search.vector_db_buffer import VectorDBBuffer
 
 if TYPE_CHECKING:
     from _typeshed import SupportsWrite  # noqa: F401
@@ -33,7 +29,7 @@ if TYPE_CHECKING:
 logger = get_prefixed_logger(__name__, "BERLIN")
 
 
-class BerlinOpenDataDownloader:
+class BerlinOpenDataDownloader(BaseDataDownloader):
     """Optimized async class for downloading Berlin open data"""
 
     # region INIT
@@ -41,13 +37,13 @@ class BerlinOpenDataDownloader:
     def __init__(
         self,
         output_dir: str = "berlin",
-        max_workers: int = 20,  # Increased default
-        delay: float = 0.05,  # Reduced delay
+        max_workers: int = 20,
+        delay: float = 0.05,
         is_embeddings: bool = False,
         is_store: bool = False,
-        connection_limit: int = 100,  # Total connection pool size
-        connection_limit_per_host: int = 30,  # Per-host limit
-        batch_size: int = 50,  # Process packages in batches
+        connection_limit: int = 100,
+        connection_limit_per_host: int = 30,
+        batch_size: int = 50,
     ):
         """
         Initialize optimized downloader
@@ -62,20 +58,18 @@ class BerlinOpenDataDownloader:
             connection_limit_per_host: Per-host connection limit
             batch_size: Size of package batches to process
         """
+        super().__init__(
+            output_dir,
+            max_workers,
+            delay,
+            is_embeddings,
+            is_store,
+            connection_limit,
+            connection_limit_per_host,
+            batch_size,
+        )
         self.base_url = "https://datenregister.berlin.de"
         self.api_url = f"{self.base_url}/api/3/action"
-        self.output_dir = Path(__file__).parent / Path(output_dir)
-        self.max_workers = max_workers
-        self.delay = delay
-        self.batch_size = batch_size
-        self.session = None
-
-        # Connection configuration
-        self.connection_limit = connection_limit
-        self.connection_limit_per_host = connection_limit_per_host
-
-        # Create output directory
-        self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Statistics
         self.stats = {
@@ -88,10 +82,8 @@ class BerlinOpenDataDownloader:
             "cache_hits": 0,
             "playwright_downloads": 0,
         }
-        self.stats_lock = asyncio.Lock()
-
         # Cache for package details to avoid redundant API calls
-        self.package_cache = {}
+        self.cache = {}
         self.cache_lock = asyncio.Lock()
 
         # Track domains that require Playwright
@@ -102,70 +94,7 @@ class BerlinOpenDataDownloader:
         self.browser = None
         self.browser_lock = asyncio.Lock()
 
-        self.is_embeddings = is_embeddings
-        self.is_store = is_store
-        # Async VectorDB will be initialized in __aenter__
-        self.vector_db_buffer: VectorDBBuffer | None = None
-        self.dataset_db_buffer: DatasetDBBuffer | None = None
-
-    async def __aenter__(self):
-        """Async context manager entry with optimized session"""
-        # Create connector with connection pooling
-        connector = aiohttp.TCPConnector(
-            limit=self.connection_limit,
-            limit_per_host=self.connection_limit_per_host,
-            ttl_dns_cache=300,  # DNS cache for 5 minutes
-            enable_cleanup_closed=True,
-        )
-
-        # Optimized timeout settings
-        timeout = aiohttp.ClientTimeout(
-            total=60,  # Total timeout
-            connect=10,  # Connection timeout
-            sock_read=30,  # Socket read timeout
-        )
-
-        self.session = aiohttp.ClientSession(
-            connector=connector,
-            timeout=timeout,
-            headers={
-                "User-Agent": "Berlin OpenData Downloader (Python/aiohttp)",
-                "Accept-Encoding": "gzip, deflate",  # Enable compression
-            },
-        )
-
-        # Initialize async VectorDB if embeddings are enabled
-        if self.is_embeddings:
-            vector_db = await get_vector_db(use_grpc=True)
-            self.vector_db_buffer = VectorDBBuffer(vector_db, buffer_size=150)
-
-        if self.is_store:
-            database = await get_mongo_database()
-            dataset_db = await get_dataset_repository(database=database)
-            self.dataset_db_buffer: DatasetDBBuffer | None = DatasetDBBuffer(dataset_db)
-
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit"""
-        # Flush embeddings buffer if it exists
-        if self.vector_db_buffer:
-            try:
-                await self.vector_db_buffer.flush()
-            except Exception as e:
-                logger.error(f"Error flushing VECTOR buffer: {e}")
-
-        if self.dataset_db_buffer:
-            try:
-                await self.dataset_db_buffer.flush()
-            except Exception as e:
-                logger.error(f"Error flushing MONGO buffer: {e}")
-
-        # Close HTTP session
-        if self.session:
-            await self.session.close()
-
-        # Close browser
+    async def _cleanup_resources(self):
         if self.browser:
             await self.browser.close()
 
@@ -387,7 +316,7 @@ class BerlinOpenDataDownloader:
 
                 if "html" in content_type:
                     # Read first chunk to check if it's actually HTML
-                    first_chunk = await response.fields.read(1024)
+                    first_chunk = await response.content.read(1024)
                     if b"<!DOCTYPE" in first_chunk or b"<html" in first_chunk:
                         logger.debug(f"HTML content detected, trying Playwright: {url}")
                         async with self.playwright_lock:
@@ -398,14 +327,14 @@ class BerlinOpenDataDownloader:
                     async with aiofiles.open(temp_filepath, "wb") as f:
                         await f.write(first_chunk)
                         # Continue with rest of file
-                        async for chunk in response.fields.iter_chunked(
+                        async for chunk in response.content.iter_chunked(
                             65536
                         ):  # Larger chunks
                             await f.write(chunk)
                 else:
                     # Normal download with larger buffer
                     async with aiofiles.open(temp_filepath, "wb") as f:
-                        async for chunk in response.fields.iter_chunked(65536):
+                        async for chunk in response.content.iter_chunked(65536):
                             await f.write(chunk)
 
             # Verify file is not empty
@@ -435,9 +364,9 @@ class BerlinOpenDataDownloader:
         """Get package details with caching"""
         # Check cache first
         async with self.cache_lock:
-            if package_name in self.package_cache:
+            if package_name in self.cache:
                 await self.update_stats("cache_hits")
-                return self.package_cache[package_name]
+                return self.cache[package_name]
 
         try:
             async with self.session.get(
@@ -450,7 +379,7 @@ class BerlinOpenDataDownloader:
                     result = data.get("result")
                     # Cache the result
                     async with self.cache_lock:
-                        self.package_cache[package_name] = result
+                        self.cache[package_name] = result
                     return result
                 else:
                     logger.warning(f"Package not found or error: {package_name}")
@@ -617,7 +546,7 @@ class BerlinOpenDataDownloader:
         return []
 
     # 1.
-    async def download_all_datasets(self):
+    async def process_all_datasets(self):
         """Optimized download with batching and better concurrency"""
         logger.info("Starting optimized Berlin Open Data download")
 
@@ -751,7 +680,7 @@ async def main():
             connection_limit=args.connection_limit,
             is_embeddings=True,
         ) as downloader:
-            await downloader.download_all_datasets()
+            await downloader.process_all_datasets()
 
     except KeyboardInterrupt:
         logger.info("Download interrupted by user")

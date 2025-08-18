@@ -4,30 +4,24 @@ import sys
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional
 from urllib.parse import urlparse, unquote
 
-import aiohttp
 import aiofiles
-from aiohttp import ClientTimeout, TCPConnector
 
+from src.datasets.base_data_downloader import BaseDataDownloader
 from src.datasets.datasets_metadata import (
     DatasetMetadataWithContent,
 )
-from src.domain.repositories.dataset_repository import get_dataset_repository
-from src.domain.services.dataset_buffer import DatasetDBBuffer
 from src.infrastructure.logger import get_prefixed_logger
-from src.infrastructure.mongo_db import get_mongo_database
 from src.utils.datasets_utils import sanitize_filename, safe_delete
 from src.utils.embeddings_utils import extract_data_content
 from src.utils.file import save_file_with_task
-from src.vector_search.vector_db import get_vector_db
-from src.vector_search.vector_db_buffer import VectorDBBuffer
 
 logger = get_prefixed_logger(__name__, "LEIPZIG")
 
 
-class LeipzigCSVJSONDownloader:
+class LeipzigOpenDataDownloader(BaseDataDownloader):
     """Optimized async class for downloading Leipzig CSV/JSON data"""
 
     # region INIT
@@ -58,19 +52,19 @@ class LeipzigCSVJSONDownloader:
             batch_size: Size of dataset batches to process
             max_retries: Maximum retry attempts for failed requests
         """
+        super().__init__(
+            output_dir,
+            max_workers,
+            delay,
+            is_embeddings,
+            is_store,
+            connection_limit,
+            connection_limit_per_host,
+            batch_size,
+            max_retries,
+        )
         self.base_url = "https://opendata.leipzig.de"
         self.api_url = f"{self.base_url}/api/3/action"
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(exist_ok=True)
-        self.max_workers = max_workers
-        self.delay = delay
-        self.batch_size = batch_size
-        self.max_retries = max_retries
-        self.session = None
-
-        # Connection configuration
-        self.connection_limit = connection_limit
-        self.connection_limit_per_host = connection_limit_per_host
 
         # Target formats
         self.target_formats = {"csv", "json", "geojson"}
@@ -89,79 +83,6 @@ class LeipzigCSVJSONDownloader:
             "cache_hits": 0,
             "retries": 0,
         }
-        self.stats_lock = asyncio.Lock()
-        self.index_lock = asyncio.Lock()
-
-        # Cache for package details to avoid redundant API calls
-        self.package_cache = {}
-        self.cache_lock = asyncio.Lock()
-
-        # Track failed URLs for retry optimization
-        self.failed_urls: Set[str] = set()
-        self.failed_urls_lock = asyncio.Lock()
-
-        self.is_embeddings = is_embeddings
-        self.is_store = is_store
-        # Async VectorDB will be initialized in __aenter__
-        self.vector_db_buffer: VectorDBBuffer | None = None
-        self.dataset_db_buffer: DatasetDBBuffer | None = None
-
-    async def __aenter__(self):
-        """Async context manager entry with optimized session"""
-        # Create connector with connection pooling
-        connector = TCPConnector(
-            limit=self.connection_limit,
-            limit_per_host=self.connection_limit_per_host,
-            ttl_dns_cache=300,  # DNS cache for 5 minutes
-            enable_cleanup_closed=True,
-            force_close=True,
-        )
-
-        # Optimized timeout settings
-        timeout = ClientTimeout(
-            total=60,  # Total timeout
-            connect=10,  # Connection timeout
-            sock_read=30,  # Socket read timeout
-        )
-
-        self.session = aiohttp.ClientSession(
-            connector=connector,
-            timeout=timeout,
-            headers={
-                "User-Agent": "Leipzig-CSV-JSON-Downloader/2.0 (async)",
-                "Accept": "application/json",
-                "Accept-Encoding": "gzip, deflate",  # Enable compression
-            },
-        )
-        # Initialize async VectorDB if embeddings are enabled
-        if self.is_embeddings:
-            vector_db = await get_vector_db(use_grpc=True)
-            self.vector_db_buffer = VectorDBBuffer(vector_db)
-
-        if self.is_store:
-            database = await get_mongo_database()
-            dataset_db = await get_dataset_repository(database=database)
-            self.dataset_db_buffer: DatasetDBBuffer | None = DatasetDBBuffer(dataset_db)
-
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit"""
-        if self.session:
-            await self.session.close()
-
-        # Flush embeddings buffer if it exists
-        if self.vector_db_buffer:
-            try:
-                await self.vector_db_buffer.flush()
-            except Exception as e:
-                logger.error(f"Error flushing VECTOR buffer: {e}")
-
-        if self.dataset_db_buffer:
-            try:
-                await self.dataset_db_buffer.flush()
-            except Exception as e:
-                logger.error(f"Error flushing MONGO buffer: {e}")
 
     # endregion
 
@@ -294,7 +215,7 @@ Filter: CSV and JSON formats only
 
                         # Download with streaming
                         async with aiofiles.open(temp_path, "wb") as f:
-                            async for chunk in response.fields.iter_chunked(
+                            async for chunk in response.content.iter_chunked(
                                 65536
                             ):  # 64KB chunks
                                 await f.write(chunk)
@@ -426,12 +347,6 @@ Filter: CSV and JSON formats only
     # 5.
     async def get_package_details(self, package_id: str) -> Optional[Dict]:
         """Get package details with caching and retry logic"""
-        # Check cache first
-        async with self.cache_lock:
-            if package_id in self.package_cache:
-                await self.update_stats("cache_hits")
-                return self.package_cache[package_id]
-
         await asyncio.sleep(self.delay)  # Rate limiting
 
         for attempt in range(self.max_retries):
@@ -444,9 +359,6 @@ Filter: CSV and JSON formats only
 
                     if data["success"]:
                         result = data["result"]
-                        # Cache the result
-                        async with self.cache_lock:
-                            self.package_cache[package_id] = result
                         return result
                     return None
 
@@ -568,7 +480,7 @@ Filter: CSV and JSON formats only
             return []
 
     # 1.
-    async def download_all_datasets(self, limit: Optional[int] = None):
+    async def process_all_datasets(self):
         """Main download method"""
         logger.info("Start Leipzig CSV & JSON Data Downloader")
         logger.debug(f"📁 Output directory: {self.output_dir.absolute()}")
@@ -582,10 +494,6 @@ Filter: CSV and JSON formats only
             return
 
         # Apply limit for testing
-        if limit:
-            target_packages = target_packages[:limit]
-            logger.debug(f"⚠️  Testing mode: processing only {limit} packages")
-
         logger.debug(f"\n🚀 Starting download of {len(target_packages)} packages...")
         logger.debug("-" * 50)
 
@@ -654,12 +562,6 @@ async def async_main():
         help="Batch size for processing (default: 50)",
     )
     parser.add_argument(
-        "--limit",
-        "-l",
-        type=int,
-        help="Limit number of packages to process (for testing)",
-    )
-    parser.add_argument(
         "--connection-limit",
         type=int,
         default=100,
@@ -676,7 +578,7 @@ async def async_main():
         logging.getLogger().setLevel(logging.INFO)
 
     try:
-        async with LeipzigCSVJSONDownloader(
+        async with LeipzigOpenDataDownloader(
             output_dir=args.output,
             max_workers=args.max_workers,
             delay=args.delay,
@@ -684,7 +586,7 @@ async def async_main():
             connection_limit=args.connection_limit,
             is_embeddings=True,
         ) as downloader:
-            await downloader.download_all_datasets(limit=args.limit)
+            await downloader.process_all_datasets()
         return 0
 
     except KeyboardInterrupt:

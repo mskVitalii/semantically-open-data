@@ -7,7 +7,13 @@ from typing import List, Dict, Optional, Set
 
 import aiohttp
 import aiofiles
-from aiohttp import ClientTimeout, TCPConnector
+from aiohttp import (
+    ClientTimeout,
+    TCPConnector,
+    ClientError,
+    ClientConnectionError,
+    ClientResponseError,
+)
 
 from src.datasets.datasets_metadata import (
     DatasetMetadataWithContent,
@@ -391,7 +397,12 @@ class DresdenOpenDataDownloader:
                         "format": format_info["format"],
                         "extension": format_info["ext"],
                     }
-        except Exception:
+        except (
+            ClientError,
+            ClientConnectionError,
+            ClientResponseError,
+            asyncio.TimeoutError,
+        ):
             pass
         return None
 

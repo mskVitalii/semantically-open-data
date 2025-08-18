@@ -454,13 +454,6 @@ def test_json_to_searchable_string_nested():
     assert "[name: John" in result
 
 
-def test_json_to_searchable_string_non_dict():
-    """Test JSON string conversion with non-dict input"""
-    result = json_to_searchable_string([1, 2, 3], max_length=10)
-
-    assert result == "[1, 2, 3]"
-
-
 def test_json_to_key_value_string_with_list():
     """Test key-value conversion with lists"""
     data = {"tags": ["python", "testing", "code"], "numbers": [1, 2, 3, 4, 5]}

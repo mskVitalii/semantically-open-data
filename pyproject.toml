@@ -25,7 +25,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "ruff>=0.12.2",
+    "ruff>=0.12.9",
     "pytest>=8.4.1",
     "pytest-asyncio>=1.0.0",
     "taskipy>=1.14.1",

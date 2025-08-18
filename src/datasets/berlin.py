@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 import aiofiles
-from playwright.async_api import async_playwright, ViewportSize
+from playwright.async_api import async_playwright, ViewportSize, Error
 
 from src.datasets.datasets_metadata import (
     DatasetMetadataWithContent,
@@ -229,7 +229,8 @@ class BerlinOpenDataDownloader:
                         if await page.locator(selector).first.is_visible():
                             await page.locator(selector).first.click()
                             break
-                    except Exception:
+                    # noqa: F821
+                    except (TimeoutError, Error):
                         continue
 
                 download = await download_info.value

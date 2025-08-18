@@ -52,7 +52,7 @@ async def root():
 
 
 @app.get("/health")
-async def health_check(client: MongoClientDep):
+async def health_check():
     try:
         manager = get_mongodb_manager()
         is_healthy = await manager.ping()

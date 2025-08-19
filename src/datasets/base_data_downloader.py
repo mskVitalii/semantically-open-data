@@ -23,6 +23,7 @@ class BaseDataDownloader(ABC):
         output_dir: str = "data",
         max_workers: int = 64,
         delay: float = 0.05,
+        is_file_system: bool = True,
         is_embeddings: bool = False,
         is_store: bool = False,
         connection_limit: int = 100,
@@ -44,8 +45,10 @@ class BaseDataDownloader(ABC):
             batch_size: Size of dataset batches to process
             max_retries: Maximum retry attempts for failed requests
         """
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(exist_ok=True)
+        self.is_file_system = is_file_system
+        if is_file_system:
+            self.output_dir = Path(output_dir)
+            self.output_dir.mkdir(exist_ok=True)
 
         self.max_workers = max_workers
         self.delay = delay

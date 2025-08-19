@@ -39,12 +39,14 @@ class DatasetDBBuffer(AsyncBuffer[DatasetMetadataWithContent]):
         Args:
             dataset: Dataset to add to the buffer
         """
+        need_flush = False
         async with self._lock:
             self._buffer.append(dataset)
             logger.debug(f"Added dataset to buffer. Current size: {len(self._buffer)}")
+            need_flush = len(self._buffer) >= self.buffer_size
 
-            if len(self._buffer) >= self.buffer_size:
-                await self._flush_internal()
+        if need_flush:
+            await self._flush_internal()
 
     async def flush(self) -> int:
         """
@@ -53,8 +55,7 @@ class DatasetDBBuffer(AsyncBuffer[DatasetMetadataWithContent]):
         Returns:
             Number of datasets indexed
         """
-        async with self._lock:
-            return await self._flush_internal()
+        return await self._flush_internal()
 
     async def clear(self) -> None:
         """Clear the buffer without indexing"""
@@ -92,38 +93,43 @@ class DatasetDBBuffer(AsyncBuffer[DatasetMetadataWithContent]):
 
     async def _flush_internal(self) -> int:
         """
-        Internal flush method (must be called with lock held)
+        Internal flush method
 
         Returns:
             Number of datasets indexed
         """
-        if not self._buffer:
-            logger.debug("Buffer is empty, nothing to flush")
-            return 0
-
-        # Get the datasets to index
-        meta_to_index = self._buffer[:]
+        async with self._lock:
+            if not self._buffer:
+                logger.debug("Buffer is empty, nothing to flush")
+                return 0
+            data_to_store = self._buffer[:]
+            self._buffer.clear()
+        data_count = len(data_to_store)
 
         try:
             # Index the datasets
-            logger.info(f"Flushing {len(meta_to_index)} datasets from buffer")
-            await self.repository.batch_insert(
-                [meta.to_dict() for meta in meta_to_index],
-                batch_size=self.buffer_size,
-            )
+            logger.info(f"Flushing {len(data_to_store)} datasets from buffer")
 
-            # Clear the buffer only after successful indexing
-            self._buffer.clear()
-            self._total_stored += len(meta_to_index)
+            async def insert_and_cleanup():
+                try:
+                    await self.repository.batch_insert(
+                        [meta.to_dict() for meta in data_to_store],
+                        batch_size=self.buffer_size,
+                    )
+                    async with self._lock:
+                        self._total_stored += data_count
+                    logger.info(
+                        f"Successfully flushed {data_count} datasets. Total indexed: {self._total_stored}"
+                    )
 
-            logger.info(
-                f"Successfully flushed {len(meta_to_index)} datasets. Total indexed: {self._total_stored}"
-            )
-            return len(meta_to_index)
+                except Exception as _e:
+                    logger.error(f"Background insert failed: {_e}")
+
+            asyncio.create_task(insert_and_cleanup())
+            return data_count
 
         except Exception as e:
             logger.error(f"Error flushing buffer: {e}")
-            # Buffer is not cleared on error, so data is not lost
             raise
 
     # endregion

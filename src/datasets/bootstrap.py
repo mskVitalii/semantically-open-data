@@ -20,9 +20,7 @@ async def download_berlin():
     start_time = time.perf_counter()
 
     async with Berlin(
-        output_dir=path,
-        is_embeddings=True,
-        is_store=True,
+        output_dir=path, is_file_system=False, is_embeddings=True, is_store=True
     ) as downloader:
         await downloader.process_all_datasets()
 
@@ -44,6 +42,8 @@ async def download_chemnitz():
     async with Chemnitz(
         csv_file,
         output_dir=path,
+        batch_size=25,
+        is_file_system=False,
         is_embeddings=True,
         is_store=True,
     ) as downloader:
@@ -61,6 +61,7 @@ async def download_leipzig():
 
     async with Leipzig(
         output_dir=path,
+        is_file_system=False,
         is_embeddings=True,
         is_store=True,
     ) as downloader:
@@ -78,6 +79,7 @@ async def download_dresden():
 
     async with Dresden(
         output_dir=path,
+        is_file_system=False,
         is_embeddings=True,
         is_store=True,
     ) as downloader:
@@ -95,9 +97,9 @@ async def bootstrap_data():
     # Create tasks for each city
     tasks = [
         download_chemnitz(),
-        download_berlin(),
-        download_leipzig(),
-        download_dresden(),
+        # download_berlin(),
+        # download_leipzig(),
+        # download_dresden(),
     ]
 
     # Run all tasks concurrently

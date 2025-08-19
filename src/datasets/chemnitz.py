@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import aiofiles
+import pandas as pd
 
 from src.datasets.base_data_downloader import BaseDataDownloader
 from src.datasets.datasets_metadata import (
@@ -15,7 +16,6 @@ from src.datasets.datasets_metadata import (
 )
 from src.utils.datasets_utils import sanitize_filename, safe_delete
 from src.infrastructure.logger import get_prefixed_logger
-from src.utils.embeddings_utils import extract_data_content
 from src.utils.file import save_file_with_task
 
 
@@ -28,8 +28,9 @@ class Chemnitz(BaseDataDownloader):
         self,
         csv_file_path: str,
         output_dir: str = "chemnitz",
-        max_workers: int = 20,
+        max_workers: int = 128,
         delay: float = 0.05,
+        is_file_system: bool = True,
         is_embeddings: bool = False,
         is_store: bool = False,
         connection_limit: int = 100,
@@ -45,6 +46,7 @@ class Chemnitz(BaseDataDownloader):
             output_dir: Directory to save data
             max_workers: Number of parallel workers
             delay: Delay between requests in seconds
+            is_file_system: Whether to save datasets to filesystem
             is_embeddings: Whether to generate embeddings
             is_store: Whether to save datasets to DB or not
             connection_limit: Total connection pool size
@@ -53,15 +55,16 @@ class Chemnitz(BaseDataDownloader):
             max_retries: Maximum retry attempts for failed requests
         """
         super().__init__(
-            output_dir,
-            max_workers,
-            delay,
-            is_embeddings,
-            is_store,
-            connection_limit,
-            connection_limit_per_host,
-            batch_size,
-            max_retries,
+            output_dir=output_dir,
+            max_workers=max_workers,
+            delay=delay,
+            is_file_system=is_file_system,
+            is_embeddings=is_embeddings,
+            is_store=is_store,
+            connection_limit=connection_limit,
+            connection_limit_per_host=connection_limit_per_host,
+            batch_size=batch_size,
+            max_retries=max_retries,
         )
         self.csv_file_path = csv_file_path
         self.stats["layers_downloaded"] = 0
@@ -82,12 +85,12 @@ class Chemnitz(BaseDataDownloader):
         service_url: str,
         layer_id: int,
         layer_name: str,
-        dataset_dir: Path,
-    ) -> bool:
+    ) -> tuple[bool, list[dict]] | bool:
         """Download data for a single layer with optimized retry logic"""
         formats_to_try = [
             ("geojson", "json"),
             ("csv", "csv"),
+            ("json", "json"),
         ]
 
         for format_name, file_ext in formats_to_try:
@@ -99,45 +102,48 @@ class Chemnitz(BaseDataDownloader):
                 "returnGeometry": "true",
             }
 
-            # Check if already downloaded
-            file_name = f"{layer_name}.{file_ext}"
-            file_path = dataset_dir / file_name
-            if file_path.exists() and file_path.stat().st_size > 0:
-                self.logger.debug(f"\t\tLayer already downloaded: {file_name}")
-                return True
-
             for attempt in range(self.max_retries):
                 try:
                     async with self.session.get(query_url, params=params) as response:
                         if response.status == 200:
-                            dataset_dir.mkdir(exist_ok=True)
+                            if self.is_file_system:
+                                safe_title = sanitize_filename(layer_name)
+                                dataset_dir = self.output_dir / safe_title
+                                dataset_dir.mkdir(exist_ok=True)
 
-                            if format_name == "geojson":
+                            if format_name == "geojson" or format_name == "json":
                                 try:
                                     data = await response.json()
                                     features = data.get("features", [])
+                                    if self.is_file_system:
+                                        file_name = f"{layer_name}.{file_ext}"
+                                        file_path = dataset_dir / file_name
+                                        content = json.dumps(
+                                            features, ensure_ascii=False, indent=2
+                                        )
+                                        save_file_with_task(file_path, content)
+                                        self.logger.debug(f"\t\t✓ Saved as {file_name}")
 
-                                    # Use aiofiles for async write
-                                    content = json.dumps(
-                                        features, ensure_ascii=False, indent=2
-                                    )
-                                    save_file_with_task(file_path, content)
-
-                                    self.logger.debug(f"\t\t✓ Saved as {file_name}")
                                     await self.update_stats("layers_downloaded")
-                                    return True
+                                    return True, features
 
                                 except json.JSONDecodeError:
-                                    if file_path.exists():
+                                    if self.is_file_system & file_path.exists():
                                         file_path.unlink()
                                     continue
                             else:
                                 content = await response.read()
-                                save_file_with_task(file_path, content, binary=True)
+                                if self.is_file_system:
+                                    file_name = f"{layer_name}.{file_ext}"
+                                    file_path = dataset_dir / file_name
+                                    save_file_with_task(file_path, content, binary=True)
+                                    self.logger.debug(f"✓ Saved as {file_name}")
 
-                                self.logger.debug(f"\t\t✓ Saved as {file_name}")
+                                df = pd.read_csv(io.BytesIO(content))
+                                features = df.to_dict("records")
+
                                 await self.update_stats("layers_downloaded")
-                                return True
+                                return True, features
 
                 except Exception as e:
                     if attempt < self.max_retries - 1:
@@ -145,24 +151,22 @@ class Chemnitz(BaseDataDownloader):
                         await asyncio.sleep(2**attempt)
                     else:
                         self.logger.error(
-                            f"\t\tError downloading layer {layer_name} with format {format_name}: {e}"
+                            f"Error downloading layer {layer_name} with format {format_name}: {e}"
                         )
                         continue
 
-        self.logger.error(f"\t\t⚠ Couldn't download layer {layer_name}")
+        self.logger.error(f"⚠ Couldn't download layer {layer_name}")
         return False
 
     # 5.
     async def get_service_info(self, service_url: str) -> Optional[dict]:
         """Get service info with caching and retry logic"""
-        cached_service_info = await self.get_from_cache(service_url)
-        if cached_service_info is not None:
-            return cached_service_info
+        # cached_service_info = await self.get_from_cache(service_url)
+        # if cached_service_info is not None:
+        #     return cached_service_info
 
-        # Check if URL previously failed
-        async with self.failed_urls_lock:
-            if service_url in self.failed_urls:
-                return None
+        if await self.is_url_failed(service_url):
+            return None
 
         info_url = f"{service_url}?f=json"
 
@@ -172,7 +176,7 @@ class Chemnitz(BaseDataDownloader):
                     response.raise_for_status()
                     result = await response.json()
 
-                await self.add_to_cache(service_url, result)
+                # await self.add_to_cache(service_url, result)
                 return result
 
             except Exception as e:
@@ -183,8 +187,7 @@ class Chemnitz(BaseDataDownloader):
                     self.logger.error(
                         f"Error getting service info from {service_url}: {e}"
                     )
-                    async with self.failed_urls_lock:
-                        self.failed_urls.add(service_url)
+                    await self.mark_url_failed(service_url)
                     return None
         return None
 
@@ -206,14 +209,13 @@ class Chemnitz(BaseDataDownloader):
 
             # Prepare folder
             safe_title = sanitize_filename(title)
-            dataset_dir = self.output_dir / safe_title
-
-            # Skip if already processed
-            metadata_file = dataset_dir / "metadata.json"
-            if metadata_file.exists():
-                self.logger.debug(f"\tDataset already processed: {title}")
-                await self.update_stats("datasets_processed")
-                return True
+            if self.is_file_system:
+                dataset_dir = self.output_dir / safe_title
+                metadata_file = dataset_dir / "metadata.json"
+                if metadata_file.exists():
+                    self.logger.debug(f"\tDataset already processed: {title}")
+                    await self.update_stats("datasets_processed")
+                    return True
 
             # Prepare metadata
             package_meta = DatasetMetadataWithContent(
@@ -240,20 +242,18 @@ class Chemnitz(BaseDataDownloader):
             )
 
             # Download layers concurrently with limited concurrency
-            layer_semaphore = asyncio.Semaphore(5)  # Limit concurrent layer downloads
+            layer_semaphore = asyncio.Semaphore(self.max_workers)
 
             async def download_with_semaphore(feature):
                 async with layer_semaphore:
                     layer_id = feature.get("id", 0)
                     layer_name = feature.get("name", f"layer_{layer_id}")
                     return await self.download_layer_data(
-                        service_url, layer_id, layer_name, dataset_dir
+                        service_url, layer_id, layer_name
                     )
 
             # Create download tasks
-            download_tasks = [
-                download_with_semaphore(feature) for feature in all_features
-            ]
+            download_tasks = [download_with_semaphore(f) for f in all_features]
 
             # Wait for all downloads
             results = await asyncio.gather(*download_tasks, return_exceptions=True)
@@ -262,30 +262,32 @@ class Chemnitz(BaseDataDownloader):
             success_count = sum(
                 1
                 for result in results
-                if result is True and not isinstance(result, Exception)
+                if not isinstance(result, Exception)
+                and isinstance(result, tuple)
+                and len(result) == 2
+                and result[0] is True
             )
-
             if success_count > 0:
                 self.logger.debug(
                     f"\tDownloaded {success_count}/{len(all_features)} layers for: {title}"
                 )
-
-                # Save metadata
-                content = package_meta.to_json()
-                save_file_with_task(metadata_file, content)
-
                 await self.update_stats("files_downloaded")
-
-                package_meta.fields = await extract_data_content(dataset_dir)
 
                 if self.is_embeddings and self.vector_db_buffer:
                     await self.vector_db_buffer.add(package_meta)
 
                 if self.is_store and self.dataset_db_buffer:
                     await self.dataset_db_buffer.add(package_meta)
+
+                if self.is_file_system:
+                    save_file_with_task(
+                        self.output_dir / safe_title / "metadata.json",
+                        package_meta.to_json(),
+                    )
             else:
                 # Clean up empty dataset
-                safe_delete(dataset_dir, self.logger)
+                if self.is_file_system:
+                    safe_delete(self.output_dir / safe_title, self.logger)
 
             await self.update_stats("datasets_processed")
             return True
@@ -312,11 +314,11 @@ class Chemnitz(BaseDataDownloader):
             if "Feature Service" == dataset_type:
                 return await self.download_feature_service_data(url, title, description)
             else:
-                self.logger.debug(f"\t⚠ Unknown type {dataset_type} for {title}")
+                self.logger.debug(f"⚠ Not a Feature Service - {title}: {dataset_type}")
                 return False
 
         except Exception as e:
-            self.logger.error(f"\t❌ Error processing {title}: {e}")
+            self.logger.error(f"❌ Error processing {title}: {e}")
             async with self.stats_lock:
                 self.stats["failed_datasets"].add(title)
             await self.update_stats("errors")
@@ -350,7 +352,7 @@ class Chemnitz(BaseDataDownloader):
     # 1.
     async def process_all_datasets(self):
         """Download all datasets with optimized batching and concurrency"""
-        self.logger.info("Starting optimized Chemnitz Open Data download")
+        self.logger.info("Starting to download Chemnitz Open Data")
 
         # region Load datasets metadatas
         metadatas = await self.load_datasets_metadata_from_csv()
@@ -361,37 +363,22 @@ class Chemnitz(BaseDataDownloader):
         self.logger.info(
             f"Found {len(metadatas)} datasets for download with {self.max_workers} workers"
         )
-        self.logger.debug(f"Saving datasets to folder: {self.output_dir.absolute()}")
-        self.logger.debug("-" * 50)
         # endregion
 
         progress_task = asyncio.create_task(self.progress_reporter())
+
+        semaphore = asyncio.Semaphore(self.max_workers)
+
+        async def process_with_semaphore(metadata: Dict[str, str]):
+            async with semaphore:
+                return await self.process_dataset(metadata)
 
         # Process in batches to avoid overwhelming memory
         for i in range(0, len(metadatas), self.batch_size):
             batch = metadatas[i : i + self.batch_size]
 
-            semaphore = asyncio.Semaphore(self.max_workers)
-
-            async def process_with_semaphore(metadata: Dict[str, str]):
-                async with semaphore:
-                    return await self.process_dataset(metadata)
-
             tasks = [process_with_semaphore(metadata) for metadata in batch]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            # Handle exceptions
-            for metadata, result in zip(batch, results):
-                if isinstance(result, Exception):
-                    self.logger.error(
-                        f"Exception in task for {metadata['title']}: {result}"
-                    )
-                    await self.update_stats("errors")
-
-            self.logger.info(
-                f"Completed batch {i // self.batch_size + 1}/"
-                f"{(len(metadatas) + self.batch_size - 1) // self.batch_size}"
-            )
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         # Cancel progress reporter
         progress_task.cancel()

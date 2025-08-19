@@ -31,6 +31,7 @@ class Dresden(BaseDataDownloader):
         output_dir: str = "dresden",
         max_workers: int = 20,
         delay: float = 0.05,
+        is_file_system: bool = True,
         is_embeddings: bool = False,
         is_store: bool = False,
         connection_limit: int = 100,
@@ -45,6 +46,7 @@ class Dresden(BaseDataDownloader):
             output_dir: Directory to save data
             max_workers: Number of parallel workers
             delay: Delay between requests in seconds
+            is_file_system: Whether to save datasets to filesystem
             is_embeddings: Whether to generate embeddings
             is_store: Whether to save datasets to DB or not
             connection_limit: Total connection pool size
@@ -53,15 +55,16 @@ class Dresden(BaseDataDownloader):
             max_retries: Maximum retry attempts for failed requests
         """
         super().__init__(
-            output_dir,
-            max_workers,
-            delay,
-            is_embeddings,
-            is_store,
-            connection_limit,
-            connection_limit_per_host,
-            batch_size,
-            max_retries,
+            output_dir=output_dir,
+            max_workers=max_workers,
+            delay=delay,
+            is_file_system=is_file_system,
+            is_embeddings=is_embeddings,
+            is_store=is_store,
+            connection_limit=connection_limit,
+            connection_limit_per_host=connection_limit_per_host,
+            batch_size=batch_size,
+            max_retries=max_retries,
         )
         self.base_url = "https://register.opendata.sachsen.de"
         self.search_endpoint = f"{self.base_url}/store/search"

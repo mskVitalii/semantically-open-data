@@ -34,12 +34,14 @@ class VectorDBBuffer(AsyncBuffer[DatasetMetadataWithContent]):
         Args:
             dataset: Dataset to add to the buffer
         """
+        need_flush = False
         async with self._lock:
             self._buffer.append(dataset)
             logger.debug(f"Added dataset to buffer. Current size: {len(self._buffer)}")
+            need_flush = len(self._buffer) >= self.buffer_size
 
-            if len(self._buffer) >= self.buffer_size:
-                await self._flush_internal()
+        if need_flush:
+            await self._flush_internal()
 
     async def flush(self) -> int:
         """
@@ -48,15 +50,14 @@ class VectorDBBuffer(AsyncBuffer[DatasetMetadataWithContent]):
         Returns:
             Number of datasets indexed
         """
-        async with self._lock:
-            return await self._flush_internal()
+        return await self._flush_internal()
 
     async def clear(self) -> None:
         """Clear the buffer without indexing"""
         async with self._lock:
             count = len(self._buffer)
             self._buffer.clear()
-            logger.info(f"Cleared {count} datasets from buffer without indexing")
+        logger.info(f"Cleared {count} datasets from buffer without indexing")
 
     @property
     async def size(self) -> int:
@@ -93,28 +94,34 @@ class VectorDBBuffer(AsyncBuffer[DatasetMetadataWithContent]):
         Returns:
             Number of datasets indexed
         """
-        if not self._buffer:
-            logger.debug("Buffer is empty, nothing to flush")
-            return 0
-
-        # Get the datasets to index
-        datasets_to_index = self._buffer[:]
+        async with self._lock:
+            if not self._buffer:
+                logger.debug("Buffer is empty, nothing to flush")
+                return 0
+            data_to_index = self._buffer[:]
+            self._buffer.clear()
+        data_count = len(data_to_index)
 
         try:
-            # Index the datasets
-            logger.info(f"Flushing {len(datasets_to_index)} datasets from buffer")
-            await self.vector_db.index_datasets(
-                datasets_to_index, batch_size=self.buffer_size
-            )
+            logger.info(f"Flushing {data_count} datasets from buffer")
 
-            # Clear the buffer only after successful indexing
-            self._buffer.clear()
-            self._total_indexed += len(datasets_to_index)
+            async def index_and_cleanup():
+                try:
+                    await self.vector_db.index_datasets(
+                        data_to_index, batch_size=self.buffer_size
+                    )
+                    async with self._lock:
+                        self._total_indexed += data_count
+                    logger.info(
+                        f"Successfully flushed {data_count} datasets. Total indexed: {self._total_indexed}"
+                    )
 
-            logger.info(
-                f"Successfully flushed {len(datasets_to_index)} datasets. Total indexed: {self._total_indexed}"
-            )
-            return len(datasets_to_index)
+                except Exception as _e:
+                    logger.error(f"Background insert failed: {_e}")
+
+            asyncio.create_task(index_and_cleanup())
+
+            return data_count
 
         except Exception as e:
             logger.error(f"Error flushing buffer: {e}")

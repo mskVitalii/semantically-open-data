@@ -10,18 +10,11 @@ import pytest
 
 # Import the module to test (assuming it's named text_extraction.py)
 from src.utils.embeddings_utils import (
-    extract_comprehensive_text,
-    extract_metadata_text,
     extract_data_content,
-    get_csv_schema,
-    get_json_schema,
     get_csv_example,
     get_json_example,
     json_to_searchable_string,
-    flatten_json_to_string,
-    _extract_json_fields,
     _json_to_key_value_string,
-    _json_to_natural_string,
 )
 
 
@@ -90,100 +83,6 @@ def nested_json_data():
 
 
 # =============================================================================
-# TEST COMPREHENSIVE TEXT EXTRACTION
-# =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_extract_comprehensive_text_success(
-    temp_dir, sample_metadata, sample_csv_data
-):
-    """Test successful comprehensive text extraction"""
-    # Setup
-    metadata_file = temp_dir / "metadata.json"
-    csv_file = temp_dir / "data.csv"
-
-    with open(metadata_file, "w") as f:
-        json.dump(sample_metadata, f)
-
-    sample_csv_data.to_csv(csv_file, index=False)
-
-    # Test
-    result = await extract_comprehensive_text(temp_dir)
-
-    # Assert
-    assert "METADATA:" in result
-    assert "CONTENT:" in result
-    assert "Test Dataset" in result
-    assert "CSV_DATA:" in result
-
-
-@pytest.mark.asyncio
-async def test_extract_comprehensive_text_missing_path():
-    """Test comprehensive text extraction with non-existent path"""
-    result = await extract_comprehensive_text(Path("/non/existent/path"))
-    assert result == ""
-
-
-# =============================================================================
-# TEST METADATA EXTRACTION
-# =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_extract_metadata_text_success(temp_dir, sample_metadata):
-    """Test successful metadata extraction"""
-    metadata_file = temp_dir / "metadata.json"
-    with open(metadata_file, "w") as f:
-        json.dump(sample_metadata, f)
-
-    result = await extract_metadata_text(metadata_file)
-
-    assert "title: Test Dataset" in result
-    assert "description: A test dataset for unit testing" in result
-    assert "author: Test Author" in result
-
-
-@pytest.mark.asyncio
-async def test_extract_metadata_text_missing_file():
-    """Test metadata extraction with missing file"""
-    result = await extract_metadata_text(Path("/non/existent/metadata.json"))
-    assert result == ""
-
-
-@pytest.mark.asyncio
-async def test_extract_metadata_text_invalid_json(temp_dir):
-    """Test metadata extraction with invalid JSON"""
-    metadata_file = temp_dir / "metadata.json"
-    with open(metadata_file, "w") as f:
-        f.write("invalid json content")
-
-    result = await extract_metadata_text(metadata_file)
-    assert result == ""
-
-
-@pytest.mark.asyncio
-async def test_extract_metadata_text_empty_values(temp_dir):
-    """Test metadata extraction with empty string values"""
-    metadata = {
-        "title": "Test",
-        "description": "",
-        "author": "   ",
-        "valid": "Valid content",
-    }
-    metadata_file = temp_dir / "metadata.json"
-    with open(metadata_file, "w") as f:
-        json.dump(metadata, f)
-
-    result = await extract_metadata_text(metadata_file)
-
-    assert "title: Test" in result
-    assert "valid: Valid content" in result
-    assert "description:" not in result
-    assert "author:" not in result
-
-
-# =============================================================================
 # TEST DATA CONTENT EXTRACTION
 # =============================================================================
 
@@ -224,97 +123,6 @@ async def test_extract_data_content_skip_metadata(temp_dir, sample_metadata):
 
     # Should not contain metadata content as data
     assert "JSON_DATA:" not in result or "Test Dataset" not in result
-
-
-# =============================================================================
-# TEST SCHEMA EXTRACTION
-# =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_get_csv_schema_success(temp_dir, sample_csv_data):
-    """Test successful CSV schema extraction"""
-    csv_file = temp_dir / "data.csv"
-    sample_csv_data.to_csv(csv_file, index=False)
-
-    schema = await get_csv_schema(csv_file)
-
-    assert schema == ["id", "name", "age", "city"]
-
-
-@pytest.mark.asyncio
-async def test_get_csv_schema_empty_file(temp_dir):
-    """Test CSV schema extraction from empty file"""
-    csv_file = temp_dir / "empty.csv"
-    csv_file.touch()
-
-    schema = await get_csv_schema(csv_file)
-
-    assert schema == []
-
-
-@pytest.mark.asyncio
-async def test_get_csv_schema_missing_file():
-    """Test CSV schema extraction with missing file"""
-    with pytest.raises(FileNotFoundError):
-        await get_csv_schema(Path("/non/existent/file.csv"))
-
-
-@pytest.mark.asyncio
-async def test_get_json_schema_simple(temp_dir, sample_json_data):
-    """Test JSON schema extraction from simple data"""
-    json_file = temp_dir / "data.json"
-    with open(json_file, "w") as f:
-        json.dump(sample_json_data[0], f)
-
-    schema = await get_json_schema(json_file)
-
-    assert "id" in schema
-    assert "product" in schema
-    assert "price" in schema
-    assert "in_stock" in schema
-
-
-@pytest.mark.asyncio
-async def test_get_json_schema_nested(temp_dir, nested_json_data):
-    """Test JSON schema extraction from nested data"""
-    json_file = temp_dir / "nested.json"
-    with open(json_file, "w") as f:
-        json.dump(nested_json_data, f)
-
-    schema = await get_json_schema(json_file, max_depth=3)
-
-    assert "company" in schema
-    assert "employees" in schema
-    assert "employees.name" in schema
-    assert "employees.department" in schema
-    assert "employees.department.name" in schema
-    assert "metadata.created" in schema
-
-
-@pytest.mark.asyncio
-async def test_get_json_schema_max_depth(temp_dir, nested_json_data):
-    """Test JSON schema extraction respects max_depth"""
-    json_file = temp_dir / "nested.json"
-    with open(json_file, "w") as f:
-        json.dump(nested_json_data, f)
-
-    schema = await get_json_schema(json_file, max_depth=1)
-
-    assert "company" in schema
-    assert "employees" in schema
-    assert "employees.name" not in schema  # Should not go deeper than max_depth
-
-
-def test_extract_json_fields_array():
-    """Test _extract_json_fields with arrays"""
-    data = {"items": [{"id": 1, "name": "Item 1"}, {"id": 2, "name": "Item 2"}]}
-
-    fields = _extract_json_fields(data, max_depth=2)
-
-    assert "items" in fields
-    assert "items.id" in fields
-    assert "items.name" in fields
 
 
 # =============================================================================
@@ -407,28 +215,18 @@ def test_json_to_searchable_string_key_value():
     """Test JSON to key-value string conversion"""
     data = {"name": "Test", "age": 30, "city": "New York"}
 
-    result = json_to_searchable_string(data, format_style="key_value")
+    result = json_to_searchable_string(data)
 
     assert "name: Test" in result
     assert "age: 30" in result
     assert "city: New York" in result
 
 
-def test_json_to_searchable_string_natural():
-    """Test JSON to natural language string conversion"""
-    data = {"user_name": "John", "total_orders": 5}
-
-    result = json_to_searchable_string(data, format_style="natural")
-
-    assert "user name is John" in result
-    assert "total orders is 5" in result
-
-
 def test_json_to_searchable_string_compact():
     """Test JSON to compact string conversion"""
     data = {"id": 1, "name": "Test"}
 
-    result = json_to_searchable_string(data, format_style="compact")
+    result = json_to_searchable_string(data)
 
     assert "id: 1" in result
     assert "name: Test" in result
@@ -448,7 +246,7 @@ def test_json_to_searchable_string_nested():
     """Test JSON string conversion with nested objects"""
     data = {"user": {"name": "John", "address": {"city": "NYC"}}}
 
-    result = json_to_searchable_string(data, format_style="key_value", max_depth=2)
+    result = json_to_searchable_string(data, max_depth=2)
 
     assert "user:" in result
     assert "[name: John" in result
@@ -462,49 +260,6 @@ def test_json_to_key_value_string_with_list():
 
     assert "tags: [python, testing, code]" in result
     assert "numbers: [1, 2, 3...]" in result
-
-
-def test_json_to_natural_string_with_list():
-    """Test natural language conversion with lists"""
-    data = {"skills": ["Python", "JavaScript"]}
-
-    result = _json_to_natural_string(data, max_length=500)
-
-    assert "skills includes Python, JavaScript" in result
-
-
-def test_flatten_json_to_string():
-    """Test flattening JSON to string"""
-    data = {"name": "Test", "details": {"age": 30, "city": "NYC"}, "tags": ["a", "b"]}
-
-    result = flatten_json_to_string(data, separator=" ", include_keys=True)
-
-    assert "name" in result
-    assert "Test" in result
-    assert "details" in result
-    assert "30" in result
-    assert "NYC" in result
-
-
-def test_flatten_json_to_string_without_keys():
-    """Test flattening JSON without including keys"""
-    data = {"name": "Test", "age": 30}
-
-    result = flatten_json_to_string(data, include_keys=False)
-
-    assert "name" not in result
-    assert "Test" in result
-    assert "30" in result
-
-
-def test_flatten_json_to_string_max_items():
-    """Test flattening JSON respects max_items"""
-    data = {f"key{i}": f"value{i}" for i in range(100)}
-
-    result = flatten_json_to_string(data, max_items=10)
-
-    items = result.split(" ")
-    assert len(items) <= 10
 
 
 # =============================================================================

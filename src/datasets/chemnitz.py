@@ -168,11 +168,9 @@ class Chemnitz(BaseDataDownloader):
         if await self.is_url_failed(service_url):
             return None
 
-        info_url = f"{service_url}?f=json"
-
         for attempt in range(self.max_retries):
             try:
-                async with self.session.get(info_url) as response:
+                async with self.session.get(f"{service_url}?f=json") as response:
                     response.raise_for_status()
                     result = await response.json()
 
@@ -294,8 +292,7 @@ class Chemnitz(BaseDataDownloader):
 
         except Exception as e:
             self.logger.error(f"\tError processing dataset {title}: {e}")
-            async with self.stats_lock:
-                self.stats["failed_datasets"].add(title)
+            await self.update_stats("failed_datasets", title)
             await self.update_stats("errors")
             return False
 
@@ -319,8 +316,7 @@ class Chemnitz(BaseDataDownloader):
 
         except Exception as e:
             self.logger.error(f"❌ Error processing {title}: {e}")
-            async with self.stats_lock:
-                self.stats["failed_datasets"].add(title)
+            await self.update_stats("failed_datasets", title)
             await self.update_stats("errors")
             return False
 

@@ -352,6 +352,10 @@ class BaseDataDownloader(ABC):
         """
         pass
 
+    async def get_stat_value(self, key: str):
+        async with self.stats_lock:
+            return self.stats[key]
+
     # endregion
 
     # region FAILED URLS

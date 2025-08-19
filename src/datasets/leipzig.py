@@ -1,12 +1,14 @@
 import asyncio
+import io
+import json
 import logging
 import sys
 import os
-from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Dict, Optional
 from urllib.parse import urlparse, unquote
 
 import aiofiles
+import pandas as pd
 
 from src.datasets.base_data_downloader import BaseDataDownloader
 from src.datasets.datasets_metadata import (
@@ -14,7 +16,6 @@ from src.datasets.datasets_metadata import (
 )
 from src.infrastructure.logger import get_prefixed_logger
 from src.utils.datasets_utils import sanitize_filename, safe_delete
-from src.utils.embeddings_utils import extract_data_content
 from src.utils.file import save_file_with_task
 
 
@@ -26,7 +27,7 @@ class Leipzig(BaseDataDownloader):
     def __init__(
         self,
         output_dir: str = "leipzig",
-        max_workers: int = 20,
+        max_workers: int = 128,
         delay: float = 0.05,
         is_file_system: bool = True,
         is_embeddings: bool = False,
@@ -89,7 +90,9 @@ class Leipzig(BaseDataDownloader):
         return ".data"
 
     # 7.
-    async def download_resource(self, resource: Dict, dataset_dir: Path) -> bool:
+    async def download_resource(
+        self, resource: Dict, safe_title: str
+    ) -> tuple[bool, list[dict]] | bool:
         """Download a single resource with retry logic"""
         try:
             url = resource.get("url")
@@ -101,50 +104,68 @@ class Leipzig(BaseDataDownloader):
                 f"\t📄 Downloading: {resource_name} ({resource_format.upper()})"
             )
 
-            # Determine filename
-            file_extension = self.get_file_extension(url, resource_format)
-            safe_name = sanitize_filename(resource_name)
-            filename = f"{safe_name}{file_extension}"
-
-            # Avoid duplication
-            counter = 1
-            original_filename = filename
-            while (dataset_dir / filename).exists():
-                name, ext = os.path.splitext(original_filename)
-                filename = f"{name}_{counter}{ext}"
-                counter += 1
-
-            file_path = dataset_dir / filename
-
             # Download with retry
             for attempt in range(self.max_retries):
                 try:
                     async with self.session.get(url) as response:
                         response.raise_for_status()
+                        dataset_format = self.get_file_extension(url, resource_format)
+                        if not self.is_file_system:
+                            if dataset_format == ".csv":
+                                content = await response.read()
+                                df = pd.read_csv(io.BytesIO(content))
+                                features = df.to_dict("records")
+                                await self.update_stats("layers_downloaded")
+                                return True, features
+                            else:
+                                try:
+                                    data = await response.json()
+                                    features = data.get("features", [])
+                                    await self.update_stats("layers_downloaded")
+                                    return True, features
+                                except json.JSONDecodeError:
+                                    continue
 
-                        # Create temporary file for atomic write
-                        temp_path = file_path.with_suffix(file_path.suffix + ".tmp")
+                        else:
+                            # Determine filename
+                            safe_name = sanitize_filename(resource_name)
+                            filename = f"{safe_name}{dataset_format}"
 
-                        # Download with streaming
-                        async with aiofiles.open(temp_path, "wb") as f:
-                            async for chunk in response.content.iter_chunked(
-                                65536
-                            ):  # 64KB chunks
-                                await f.write(chunk)
+                            # region Avoid duplication
+                            counter = 1
+                            original_filename = filename
+                            dataset_dir = self.output_dir / safe_title
+                            while (dataset_dir / filename).exists():
+                                name, ext = os.path.splitext(original_filename)
+                                filename = f"{name}_{counter}{ext}"
+                                counter += 1
+                            # endregion
 
-                        # Verify file is not empty
-                        if temp_path.stat().st_size == 0:
-                            self.logger.warning(f"Downloaded file is empty: {filename}")
-                            temp_path.unlink()
-                            async with self.failed_urls_lock:
-                                self.failed_urls.add(url)
-                            return False
+                            file_path = dataset_dir / filename
 
-                        # Atomic rename
-                        temp_path.rename(file_path)
+                            temp_path = file_path.with_suffix(file_path.suffix + ".tmp")
 
-                        file_size = file_path.stat().st_size
-                        self.logger.debug(f"\t✅ {filename} ({file_size:,} bytes)")
+                            # Download with streaming
+                            async with aiofiles.open(temp_path, "wb") as f:
+                                async for chunk in response.content.iter_chunked(
+                                    65536
+                                ):  # 64KB chunks
+                                    await f.write(chunk)
+
+                            # Verify file is not empty
+                            if temp_path.stat().st_size == 0:
+                                self.logger.warning(
+                                    f"Downloaded file is empty: {filename}"
+                                )
+                                temp_path.unlink()
+                                async with self.failed_urls_lock:
+                                    self.failed_urls.add(url)
+                                return False
+
+                            # Atomic rename
+                            temp_path.rename(file_path)
+                            file_size = file_path.stat().st_size
+                            self.logger.debug(f"\t✅ {filename} ({file_size:,} bytes)")
                         return True
 
                 except Exception as e:
@@ -153,8 +174,7 @@ class Leipzig(BaseDataDownloader):
                         await asyncio.sleep(2**attempt)
                     else:
                         self.logger.error(f"\t❌ Error downloading {url}: {e}")
-                        async with self.failed_urls_lock:
-                            self.failed_urls.add(url)
+                        await self.mark_url_failed(url)
                         return False
 
             return False
@@ -176,18 +196,15 @@ class Leipzig(BaseDataDownloader):
             self.logger.debug(f"\t🏢 Organization: {organization}")
             self.logger.debug(f"\t📊 Target resources: {len(target_resources)}")
 
-            # Create directory
-            safe_title = sanitize_filename(package_title)
-            dataset_dir = self.output_dir / safe_title
-
             # Skip if already processed
-            metadata_file = dataset_dir / "metadata.json"
-            if metadata_file.exists():
-                self.logger.debug(f"\tDataset already processed: {package_title}")
-                await self.update_stats("files_downloaded")
-                return True
-
-            dataset_dir.mkdir(exist_ok=True)
+            safe_title = sanitize_filename(package_title)
+            if self.is_file_system:
+                dataset_dir = self.output_dir / safe_title
+                metadata_file = dataset_dir / "metadata.json"
+                if metadata_file.exists():
+                    self.logger.debug(f"\tDataset already processed: {safe_title}")
+                    await self.update_stats("datasets_processed")
+                    return True
 
             # Prepare metadata
             package_meta = DatasetMetadataWithContent(
@@ -217,7 +234,7 @@ class Leipzig(BaseDataDownloader):
 
             download_semaphore = asyncio.Semaphore(self.max_workers)
 
-            async def download_with_semaphore(_resource):
+            async def download_with_semaphore(_resource, _safe_title):
                 url = _resource.get("url")
                 if not url:
                     return False
@@ -225,24 +242,28 @@ class Leipzig(BaseDataDownloader):
                     return False
 
                 async with download_semaphore:
-                    return await self.download_resource(_resource, dataset_dir)
+                    return await self.download_resource(_resource, _safe_title)
 
             # Try to download a resource
             success = False
+            dataset = []
             for resource in sorted_resources:
-                if await download_with_semaphore(resource):
-                    success = True
+                success, dataset = await download_with_semaphore(resource, safe_title)
+                if success:
                     await self.update_stats("files_downloaded")
                     break  # Stop after first successful download
                 else:
                     await self.update_stats("errors")
 
+            # TODO: add the result to buffer
+
             if success:
                 # Save metadata
-                content = package_meta.to_json()
-                save_file_with_task(metadata_file, content)
+                if self.is_file_system:
+                    dataset_dir = self.output_dir / safe_title
+                    metadata_file = dataset_dir / "metadata.json"
+                    save_file_with_task(metadata_file, package_meta.to_json())
 
-                package_meta.fields = await extract_data_content(dataset_dir)
                 if self.is_embeddings and self.vector_db_buffer:
                     await self.vector_db_buffer.add(package_meta)
 
@@ -250,7 +271,9 @@ class Leipzig(BaseDataDownloader):
                     await self.dataset_db_buffer.add(package_meta)
             else:
                 # Clean up empty dataset
-                safe_delete(dataset_dir, self.logger)
+                if self.is_file_system:
+                    dataset_dir = self.output_dir / safe_title
+                    safe_delete(dataset_dir, self.logger)
 
             return success
 
@@ -260,7 +283,7 @@ class Leipzig(BaseDataDownloader):
             return False
 
     # 5.
-    async def get_package_details(self, package_id: str) -> Optional[Dict]:
+    async def get_package_details_by_api(self, package_id: str) -> Optional[Dict]:
         """Get package details with caching and retry logic"""
         await asyncio.sleep(self.delay)  # Rate limiting
 
@@ -291,7 +314,7 @@ class Leipzig(BaseDataDownloader):
     # 4.
     async def analyze_package(self, package_id: str) -> Optional[Dict]:
         """Analyze a package and return metadata if it has target formats"""
-        package_data = await self.get_package_details(package_id)
+        package_data = await self.get_package_details_by_api(package_id)
         if not package_data:
             return None
 
@@ -314,7 +337,7 @@ class Leipzig(BaseDataDownloader):
         return None
 
     # 3.
-    async def get_package_list(self) -> list[str]:
+    async def get_package_list_by_api(self) -> list[str]:
         """Get list of all package IDs with retry logic"""
         for attempt in range(self.max_retries):
             try:
@@ -341,11 +364,11 @@ class Leipzig(BaseDataDownloader):
         return []
 
     # 2.
-    async def get_packages_with_target_formats(self) -> List[Dict]:
+    async def get_packages_with_target_formats(self) -> list[dict]:
         """Get all packages that contain CSV/JSON/GeoJSON resources"""
         try:
             # Get all package IDs
-            all_packages = await self.get_package_list()
+            all_packages = await self.get_package_list_by_api()
             if not all_packages:
                 return []
 
@@ -354,15 +377,14 @@ class Leipzig(BaseDataDownloader):
             # Process packages in batches
             target_packages = []
 
+            semaphore = asyncio.Semaphore(self.max_workers)
+
+            async def analyze_with_semaphore(package_id: str):
+                async with semaphore:
+                    return await self.analyze_package(package_id)
+
             for i in range(0, len(all_packages), self.batch_size):
                 batch = all_packages[i : i + self.batch_size]
-
-                # Create semaphore for this batch
-                semaphore = asyncio.Semaphore(self.max_workers)
-
-                async def analyze_with_semaphore(package_id: str):
-                    async with semaphore:
-                        return await self.analyze_package(package_id)
 
                 # Analyze batch
                 tasks = [analyze_with_semaphore(pkg_id) for pkg_id in batch]
@@ -379,14 +401,10 @@ class Leipzig(BaseDataDownloader):
                     f"\tChecked {checked}/{len(all_packages)} packages..."
                 )
 
+            datasets_found = await self.get_stat_value("datasets_found")
             self.logger.info(
-                f"✅ Found {len(target_packages)} packages with CSV/JSON/GeoJSON"
+                f"✅ Found {len(target_packages)} CSV/JSON/GeoJSON packages with {datasets_found} target resources"
             )
-            async with self.stats_lock:
-                self.logger.info(
-                    f"📋 Total target resources: {self.stats['datasets_found']}"
-                )
-
             return target_packages
 
         except Exception as e:
@@ -396,9 +414,7 @@ class Leipzig(BaseDataDownloader):
     # 1.
     async def process_all_datasets(self):
         """Main download method"""
-        self.logger.info("Start Leipzig CSV & JSON Data Downloader")
-        self.logger.debug(f"📁 Output directory: {self.output_dir.absolute()}")
-        self.logger.debug("=" * 50)
+        self.logger.info("Start Leipzig Open Data Downloader")
 
         # Get target packages
         target_packages = await self.get_packages_with_target_formats()
@@ -414,14 +430,14 @@ class Leipzig(BaseDataDownloader):
         self.logger.debug("-" * 50)
 
         # Process packages in batches
+        semaphore = asyncio.Semaphore(self.max_workers)
+
+        async def process_with_semaphore(metadata: Dict):
+            async with semaphore:
+                return await self.download_package(metadata)
+
         for i in range(0, len(target_packages), self.batch_size):
             batch = target_packages[i : i + self.batch_size]
-
-            semaphore = asyncio.Semaphore(self.max_workers)
-
-            async def process_with_semaphore(metadata: Dict):
-                async with semaphore:
-                    return await self.download_package(metadata)
 
             # Process batch
             tasks = [process_with_semaphore(metadata) for metadata in batch]

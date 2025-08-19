@@ -463,8 +463,7 @@ class Berlin(BaseDataDownloader):
 
         except Exception as e:
             self.logger.error(f"Error processing dataset {package_name}: {e}")
-            async with self.stats_lock:
-                self.stats["failed_datasets"].add(package_name)
+            await self.update_stats("failed_datasets", package_name)
             await self.update_stats("errors")
             return False
 

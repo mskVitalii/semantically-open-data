@@ -341,8 +341,7 @@ class Chemnitz(BaseDataDownloader):
                         "description": row.get("description", "").strip(),
                     }
                 )
-
-        self.stats["datasets_found"] = len(datasets)
+        await self.update_stats("datasets_found", len(datasets))
         return datasets
 
     # 1.

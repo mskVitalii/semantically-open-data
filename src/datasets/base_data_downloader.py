@@ -46,8 +46,8 @@ class BaseDataDownloader(ABC):
             max_retries: Maximum retry attempts for failed requests
         """
         self.is_file_system = is_file_system
+        self.output_dir = Path(output_dir)
         if is_file_system:
-            self.output_dir = Path(output_dir)
             self.output_dir.mkdir(exist_ok=True)
 
         self.max_workers = max_workers

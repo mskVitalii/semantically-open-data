@@ -480,7 +480,7 @@ class Berlin(BaseDataDownloader):
 
                     if data.get("success"):
                         packages = data.get("result", [])
-                        self.stats["datasets_found"] = len(packages)
+                        await self.update_stats("datasets_found", len(packages))
                         self.logger.info(f"Found {len(packages)} datasets")
                         return packages
                     else:

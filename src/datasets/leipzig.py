@@ -158,8 +158,7 @@ class Leipzig(BaseDataDownloader):
                                     f"Downloaded file is empty: {filename}"
                                 )
                                 temp_path.unlink()
-                                async with self.failed_urls_lock:
-                                    self.failed_urls.add(url)
+                                await self.mark_url_failed(url)
                                 return False
 
                             # Atomic rename
@@ -255,9 +254,8 @@ class Leipzig(BaseDataDownloader):
                 else:
                     await self.update_stats("errors")
 
-            # TODO: add the result to buffer
-
             if success:
+                # TODO: add the dataset to buffer
                 # Save metadata
                 if self.is_file_system:
                     dataset_dir = self.output_dir / safe_title

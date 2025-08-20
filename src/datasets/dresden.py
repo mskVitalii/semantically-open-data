@@ -1,10 +1,13 @@
 import asyncio
+import io
+import json
 import logging
 import sys
 from pathlib import Path
 from typing import List, Dict, Optional
 
 import aiofiles
+import pandas as pd
 from aiohttp import (
     ClientTimeout,
     ClientError,
@@ -18,7 +21,6 @@ from src.datasets.datasets_metadata import (
 )
 from src.infrastructure.logger import get_prefixed_logger
 from src.utils.datasets_utils import sanitize_filename, safe_delete
-from src.utils.embeddings_utils import extract_data_content
 from src.utils.file import save_file_with_task
 
 
@@ -75,7 +77,9 @@ class Dresden(BaseDataDownloader):
     # region LOGIC STEPS
 
     # 8.
-    async def download_file(self, url: str, filename: str, dataset_dir: Path) -> bool:
+    async def download_file(
+        self, url: str, filename: str, dataset_dir: Path
+    ) -> tuple[bool, list[dict]] | bool:
         """
         Download file with optimized async streaming
 
@@ -90,14 +94,13 @@ class Dresden(BaseDataDownloader):
         filepath = dataset_dir / filename
 
         # Check if file already exists
-        if filepath.exists() and filepath.stat().st_size > 0:
+        if self.is_file_system and filepath.exists() and filepath.stat().st_size > 0:
             self.logger.debug(f"File already exists: {filepath}")
             return True
 
         # Check if URL previously failed
-        async with self.failed_urls_lock:
-            if url in self.failed_urls:
-                return False
+        if await self.is_url_failed(url):
+            return False
 
         for attempt in range(self.max_retries):
             try:
@@ -117,36 +120,50 @@ class Dresden(BaseDataDownloader):
                         self.logger.warning(
                             f"Response appears to be an error page: {url}"
                         )
-                        async with self.failed_urls_lock:
-                            self.failed_urls.add(url)
+                        await self.mark_url_failed(url)
                         return False
 
-                    # Create temporary file for atomic write
-                    temp_path = filepath.with_suffix(filepath.suffix + ".tmp")
+                    if not self.is_file_system:
+                        if filepath.suffix == ".csv":
+                            content = await response.read()
+                            df = pd.read_csv(io.BytesIO(content))
+                            features = df.to_dict("records")
+                            await self.update_stats("files_downloaded")
+                            return True, features
+                        else:
+                            try:
+                                data = await response.json()
+                                features = data.get("features", [])
+                                await self.update_stats("files_downloaded")
+                                return True, features
+                            except json.JSONDecodeError:
+                                continue
+                    else:
+                        # Create temporary file for atomic write
+                        temp_path = filepath.with_suffix(filepath.suffix + ".tmp")
 
-                    # Download with streaming
-                    async with aiofiles.open(temp_path, "wb") as f:
-                        async for chunk in response.content.iter_chunked(
-                            65536
-                        ):  # 64KB chunks
-                            await f.write(chunk)
+                        # Download with streaming
+                        async with aiofiles.open(temp_path, "wb") as f:
+                            async for chunk in response.content.iter_chunked(
+                                65536
+                            ):  # 64KB chunks
+                                await f.write(chunk)
 
-                    # Verify file is not empty
-                    if temp_path.stat().st_size == 0:
-                        self.logger.warning(f"Downloaded file is empty: {filepath}")
-                        temp_path.unlink()
-                        async with self.failed_urls_lock:
-                            self.failed_urls.add(url)
-                        return False
+                        # Verify file is not empty
+                        if temp_path.stat().st_size == 0:
+                            self.logger.warning(f"Downloaded file is empty: {filepath}")
+                            temp_path.unlink()
+                            await self.mark_url_failed(url)
+                            return False
 
-                    # Atomic rename
-                    temp_path.rename(filepath)
+                        # Atomic rename
+                        temp_path.rename(filepath)
 
-                    self.logger.debug(
-                        f"File saved: {filepath} ({filepath.stat().st_size} bytes)"
-                    )
-                    await self.update_stats("files_downloaded")
-                    return True
+                        self.logger.debug(
+                            f"File saved: {filepath} ({filepath.stat().st_size} bytes)"
+                        )
+                        await self.update_stats("files_downloaded")
+                        return True
 
             except Exception as e:
                 if attempt < self.max_retries - 1:
@@ -155,8 +172,7 @@ class Dresden(BaseDataDownloader):
                 else:
                     self.logger.error(f"Error downloading {url}: {e}")
                     await self.update_stats("errors")
-                    async with self.failed_urls_lock:
-                        self.failed_urls.add(url)
+                    await self.mark_url_failed(url)
                     return False
         return False
 
@@ -254,7 +270,7 @@ class Dresden(BaseDataDownloader):
         return downloads
 
     # 6.
-    async def _check_url_availability(
+    async def check_url_availability_by_api(
         self, url: str, format_info: Dict
     ) -> Optional[Dict]:
         """Check if a URL is available and return download info"""
@@ -320,7 +336,7 @@ class Dresden(BaseDataDownloader):
         check_tasks = []
         for format_info in format_attempts:
             url = f"{dataset_uri}{format_info['suffix']}"
-            task = self._check_url_availability(url, format_info)
+            task = self.check_url_availability_by_api(url, format_info)
             check_tasks.append(task)
 
         results = await asyncio.gather(*check_tasks, return_exceptions=True)
@@ -354,19 +370,19 @@ class Dresden(BaseDataDownloader):
 
         # Check if already processed
         safe_key = f"{context_id}_{entry_id}"
-        existing_dirs = [
-            d
-            for d in self.output_dir.iterdir()
-            if d.is_dir() and d.name.startswith(safe_key)
-        ]
-        if existing_dirs:
-            self.logger.debug(f"Dataset already processed: {safe_key}")
-            await self.update_stats("datasets_processed")
-            return True
+        if self.is_file_system:
+            existing_dirs = [
+                d
+                for d in self.output_dir.iterdir()
+                if d.is_dir() and d.name.startswith(safe_key)
+            ]
+            if existing_dirs:
+                self.logger.debug(f"Dataset already processed: {safe_key}")
+                await self.update_stats("datasets_processed")
+                return True
 
         # Use metadata from dataset_info
         dataset_metadata = dataset_info.get("metadata", {})
-
         if not dataset_metadata:
             self.logger.warning(f"Missing metadata for dataset {context_id}/{entry_id}")
             return False
@@ -423,7 +439,8 @@ class Dresden(BaseDataDownloader):
         # Directory creation
         safe_title = sanitize_filename(title)
         dataset_dir = self.output_dir / f"{context_id}_{entry_id}_{safe_title}"
-        dataset_dir.mkdir(exist_ok=True)
+        if self.is_file_system:
+            dataset_dir.mkdir(exist_ok=True)
 
         # Prepare metadata
         package_meta = DatasetMetadataWithContent(
@@ -442,15 +459,11 @@ class Dresden(BaseDataDownloader):
 
         # Extract download links
         downloads = await self.extract_download_urls(dataset_metadata, dataset_uri)
-
         if not downloads:
             self.logger.debug(f"No download files found for dataset: {title}")
-            # Still save metadata even if no downloads
-            metadata_file = dataset_dir / "metadata.json"
-            content = package_meta.to_json()
-            save_file_with_task(metadata_file, content)
             await self.update_stats("datasets_processed")
-            return True
+            await self.update_stats("failed_datasets")
+            return False
 
         # Sort downloads to prioritize JSON files
         json_downloads = [d for d in downloads if d.get("extension") == ".json"]
@@ -470,9 +483,11 @@ class Dresden(BaseDataDownloader):
 
         # Try to download files
         success = False
+        dataset = []
+
         for download_info in sorted_downloads:
-            if await download_with_semaphore(download_info):
-                success = True
+            success, dataset = await download_with_semaphore(download_info)
+            if success:
                 self.logger.debug(
                     f"Successfully downloaded {download_info.get('extension')} file"
                 )
@@ -480,11 +495,13 @@ class Dresden(BaseDataDownloader):
 
         if success:
             # Save metadata
-            metadata_file = dataset_dir / "metadata.json"
-            content = package_meta.to_json()
-            save_file_with_task(metadata_file, content)
+            # TODO: add the dataset to buffer
+            if self.is_file_system:
+                metadata_file = dataset_dir / "metadata.json"
+                content = package_meta.to_json()
+                save_file_with_task(metadata_file, content)
 
-            package_meta.fields = await extract_data_content(dataset_dir)
+            # package_meta.fields = await extract_data_content(dataset_dir)
 
             if self.is_embeddings and self.vector_db_buffer:
                 await self.vector_db_buffer.add(package_meta)
@@ -493,13 +510,14 @@ class Dresden(BaseDataDownloader):
                 await self.dataset_db_buffer.add(package_meta)
         else:
             # Clean up empty dataset
-            safe_delete(dataset_dir, self.logger)
+            if self.is_file_system:
+                safe_delete(dataset_dir, self.logger)
 
         await self.update_stats("datasets_processed")
         return success
 
     # 3.
-    async def search_dresden_datasets(self, limit: int = 100, offset: int = 0) -> Dict:
+    async def search_datasets_by_api(self, limit: int = 100, offset: int = 0) -> Dict:
         """
         Search Dresden datasets via API with retry logic
 
@@ -513,7 +531,7 @@ class Dresden(BaseDataDownloader):
         params = {
             "type": "solr",
             "query": "rdfType:http\\://www.w3.org/ns/dcat#Dataset AND public:true AND resource:*dresden*",
-            "limit": min(limit, 100),
+            "limit": limit,
             "offset": offset,
             "sort": "modified desc",
         }
@@ -536,7 +554,7 @@ class Dresden(BaseDataDownloader):
         return {}
 
     # 2.
-    async def collect_all_datasets(self) -> List[Dict]:
+    async def collect_datasets(self) -> List[Dict]:
         """Collect all datasets from the API"""
         all_datasets = []
         offset = 0
@@ -544,7 +562,7 @@ class Dresden(BaseDataDownloader):
 
         while True:
             # Search for datasets
-            search_result = await self.search_dresden_datasets(
+            search_result = await self.search_datasets_by_api(
                 limit=limit, offset=offset
             )
 
@@ -560,7 +578,7 @@ class Dresden(BaseDataDownloader):
                 break
 
             if offset == 0:
-                self.stats["datasets_found"] = total_results
+                await self.update_stats("datasets_found", total_results, "set")
                 self.logger.debug(f"Total datasets found: {total_results}")
 
             all_datasets.extend(children)
@@ -583,7 +601,7 @@ class Dresden(BaseDataDownloader):
         self.logger.info("Starting optimized Dresden Open Data download")
 
         # First, collect all datasets
-        all_datasets = await self.collect_all_datasets()
+        all_datasets = await self.collect_datasets()
 
         if not all_datasets:
             self.logger.error("No datasets found")
@@ -595,28 +613,21 @@ class Dresden(BaseDataDownloader):
 
         progress_task = asyncio.create_task(self.progress_reporter())
 
+        semaphore = asyncio.Semaphore(self.max_workers)
+
+        async def process_with_semaphore(dataset: Dict):
+            async with semaphore:
+                try:
+                    return await self.process_dataset(dataset)
+                except Exception as e:
+                    self.logger.error(f"Error processing dataset: {e}")
+                    await self.update_stats("errors")
+                    return False
+
         for i in range(0, len(all_datasets), self.batch_size):
             batch = all_datasets[i : i + self.batch_size]
-
-            semaphore = asyncio.Semaphore(self.max_workers)
-
-            async def process_with_semaphore(dataset: Dict):
-                async with semaphore:
-                    try:
-                        return await self.process_dataset(dataset)
-                    except Exception as e:
-                        self.logger.error(f"Error processing dataset: {e}")
-                        await self.update_stats("errors")
-                        return False
-
-            # Process batch
             tasks = [process_with_semaphore(dataset) for dataset in batch]
             await asyncio.gather(*tasks, return_exceptions=True)
-
-            self.logger.debug(
-                f"Completed batch {i // self.batch_size + 1}/"
-                f"{(len(all_datasets) + self.batch_size - 1) // self.batch_size}"
-            )
 
         # Cancel progress reporter
         progress_task.cancel()

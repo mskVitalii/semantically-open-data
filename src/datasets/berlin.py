@@ -1,12 +1,14 @@
 import asyncio
+import io
+import json
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Set
-from urllib.parse import urlparse
+from typing import Dict, Optional, Set
 
 import aiohttp
 import aiofiles
+import pandas as pd
 from playwright.async_api import async_playwright, ViewportSize, Error
 
 from src.datasets.base_data_downloader import BaseDataDownloader
@@ -19,7 +21,6 @@ from src.utils.datasets_utils import (
     sanitize_filename,
     skip_formats,
 )
-from src.utils.embeddings_utils import extract_data_content
 from src.utils.file import save_file_with_task
 
 
@@ -31,7 +32,7 @@ class Berlin(BaseDataDownloader):
     def __init__(
         self,
         output_dir: str = "berlin",
-        max_workers: int = 20,
+        max_workers: int = 128,
         delay: float = 0.05,
         is_file_system: bool = True,
         is_embeddings: bool = False,
@@ -239,84 +240,79 @@ class Berlin(BaseDataDownloader):
         return True
 
     # 5.
-    async def download_file(self, url: str, filepath: Path) -> bool:
+    async def download_file(
+        self, url: str, filepath: Path
+    ) -> tuple[bool, list[dict] | None]:
         """Optimized file download with streaming"""
         # Check if file already exists
-        if filepath.exists() and filepath.stat().st_size > 0:
+        if self.is_file_system and filepath.exists() and filepath.stat().st_size > 0:
             self.logger.debug(f"File already exists: {filepath.name}")
-            return True
-
-        # Check if domain requires Playwright
-        domain = urlparse(url).netloc
-        if domain in self.playwright_domains or url.lower().endswith("/"):
-            return await self.download_file_playwright(url, filepath)
+            return True, None
 
         try:
             self.logger.debug(f"Downloading: {url}")
-
-            # Create temporary file for atomic write
-            temp_filepath = filepath.with_suffix(filepath.suffix + ".tmp")
-
             async with self.session.get(url) as response:
-                # Quick check for HTML error pages
+                response.raise_for_status()
                 content_type = response.headers.get("content-type", "").lower()
-                if response.status != 200:
-                    # Try Playwright for non-200 responses
-                    async with self.playwright_lock:
-                        self.playwright_domains.add(domain)
-                    return await self.download_file_playwright(url, filepath)
-
-                if "html" in content_type:
-                    # Read first chunk to check if it's actually HTML
-                    first_chunk = await response.content.read(1024)
-                    if b"<!DOCTYPE" in first_chunk or b"<html" in first_chunk:
-                        self.logger.debug(
-                            f"HTML content detected, trying Playwright: {url}"
-                        )
-                        async with self.playwright_lock:
-                            self.playwright_domains.add(domain)
-                        return await self.download_file_playwright(url, filepath)
-
-                    # Write the first chunk
-                    async with aiofiles.open(temp_filepath, "wb") as f:
-                        await f.write(first_chunk)
-                        # Continue with rest of file
-                        async for chunk in response.content.iter_chunked(
-                            65536
-                        ):  # Larger chunks
-                            await f.write(chunk)
+                if not self.is_file_system:
+                    if "csv" in content_type:
+                        content = await response.read()
+                        df = pd.read_csv(io.BytesIO(content))
+                        features = df.to_dict("records")
+                        await self.update_stats("files_downloaded")
+                        return True, features
+                    else:
+                        try:
+                            data = await response.json()
+                            features = data.get("features", [])
+                            await self.update_stats("files_downloaded")
+                            return True, features
+                        except json.JSONDecodeError as e:
+                            self.logger.debug(
+                                f"JSON in memory download failed for {url}: {e}"
+                            )
+                            return False, None
                 else:
-                    # Normal download with larger buffer
-                    async with aiofiles.open(temp_filepath, "wb") as f:
-                        async for chunk in response.content.iter_chunked(65536):
-                            await f.write(chunk)
+                    # Create temporary file for atomic write
+                    temp_filepath = filepath.with_suffix(filepath.suffix + ".tmp")
 
-            # Verify file is not empty
-            if temp_filepath.stat().st_size == 0:
-                self.logger.warning(f"Downloaded file is empty: {filepath}")
-                temp_filepath.unlink()
-                return False
+                    content_type = response.headers.get("content-type", "").lower()
+                    if response.status != 200:
+                        return False, None
 
-            # Atomic rename
-            temp_filepath.rename(filepath)
+                    if "html" in content_type:
+                        # self.logger.info(f"HTML in content_type: {content_type}")
+                        # async with self.playwright_lock:
+                        #     self.playwright_domains.add(domain)
+                        # return await self.download_file_playwright(url, filepath)
+                        return False, None
+                    else:
+                        # Normal download with larger buffer
+                        async with aiofiles.open(temp_filepath, "wb") as f:
+                            async for chunk in response.content.iter_chunked(65536):
+                                await f.write(chunk)
 
-            self.logger.debug(
-                f"Downloaded: {filepath.name} ({filepath.stat().st_size} bytes)"
-            )
-            await self.update_stats("files_downloaded")
-            return True
+                    # Verify file is not empty
+                    if temp_filepath.stat().st_size == 0:
+                        self.logger.warning(f"Downloaded file is empty: {filepath}")
+                        temp_filepath.unlink()
+                        return False, None
+
+                    # Atomic rename
+                    temp_filepath.rename(filepath)
+
+                    self.logger.debug(
+                        f"Downloaded: {filepath.name} ({filepath.stat().st_size} bytes)"
+                    )
+                    await self.update_stats("files_downloaded")
+                    return True, None
 
         except Exception as e:
-            self.logger.debug(
-                f"Regular download failed for {url}: {e}, trying Playwright"
-            )
-            # Mark domain for Playwright and retry
-            async with self.playwright_lock:
-                self.playwright_domains.add(domain)
-            return await self.download_file_playwright(url, filepath)
+            self.logger.debug(f"Regular download failed for {url}: {e}")
+            return False, None
 
     # 4.
-    async def get_package_details(self, package_name: str) -> Optional[Dict]:
+    async def get_package_details_by_api(self, package_name: str) -> Optional[Dict]:
         """Get package details with caching"""
         cached_service_info = await self.get_from_cache(package_name)
         if cached_service_info is not None:
@@ -348,7 +344,7 @@ class Berlin(BaseDataDownloader):
         await asyncio.sleep(self.delay)
 
         try:
-            package = await self.get_package_details(package_name)
+            package = await self.get_package_details_by_api(package_name)
             if not package:
                 await self.update_stats("errors")
                 return False
@@ -363,16 +359,17 @@ class Berlin(BaseDataDownloader):
 
             # Skip if already processed successfully
             metadata_file = dataset_dir / "metadata.json"
-            if metadata_file.exists():
-                self.logger.debug(f"Dataset already processed: {title}")
-                await self.update_stats("datasets_processed")
-                return True
-
-            dataset_dir.mkdir(exist_ok=True)
+            if self.is_file_system:
+                if metadata_file.exists():
+                    self.logger.debug(f"Dataset already processed: {title}")
+                    await self.update_stats("datasets_processed")
+                    return True
+                dataset_dir.mkdir(exist_ok=True)
 
             if not resources:
                 self.logger.debug(f"No resources found for dataset: {title}")
                 await self.update_stats("datasets_processed")
+                await self.update_stats("failed_datasets")
                 return True
 
             self.logger.debug(
@@ -409,9 +406,7 @@ class Berlin(BaseDataDownloader):
             success_count = 0
             download_tasks = []
 
-            for priority, i, resource in valid_resources[
-                :5
-            ]:  # Limit to top 5 resources
+            for priority, i, resource in valid_resources:
                 url = resource.get("url")
                 resource_name = resource.get("name", f"resource_{i}")
                 resource_format = resource.get("format", "")
@@ -426,7 +421,7 @@ class Berlin(BaseDataDownloader):
             # Wait for downloads
             if download_tasks:
                 results = await asyncio.gather(*download_tasks, return_exceptions=True)
-                success_count = sum(1 for r in results if r is True)
+                success_count = sum(1 for r in results if r[0] is True)
 
             if success_count > 0:
                 self.logger.debug(f"Downloaded {success_count} files for: {title}")
@@ -444,10 +439,12 @@ class Berlin(BaseDataDownloader):
                     country="Germany",
                 )
 
-                content = package_meta.to_json()
-                save_file_with_task(metadata_file, content)
+                # TODO: add the dataset to buffer
 
-                package_meta.fields = await extract_data_content(dataset_dir)
+                if self.is_file_system:
+                    save_file_with_task(metadata_file, package_meta.to_json())
+
+                # package_meta.fields = await extract_data_content(dataset_dir)
 
                 if self.is_embeddings and self.vector_db_buffer:
                     await self.vector_db_buffer.add(package_meta)
@@ -456,7 +453,8 @@ class Berlin(BaseDataDownloader):
                     await self.dataset_db_buffer.add(package_meta)
             else:
                 # Clean up empty dataset
-                safe_delete(dataset_dir, self.logger)
+                if self.is_file_system:
+                    safe_delete(dataset_dir, self.logger)
 
             await self.update_stats("datasets_processed")
             return True
@@ -468,7 +466,7 @@ class Berlin(BaseDataDownloader):
             return False
 
     # 2.
-    async def get_all_packages(self) -> List[str]:
+    async def get_all_packages_by_api(self) -> list[str]:
         """Get list of all package names with retry logic"""
         max_retries = 3
         for attempt in range(max_retries):
@@ -504,7 +502,7 @@ class Berlin(BaseDataDownloader):
         self.logger.info("Starting optimized Berlin Open Data download")
 
         # Get list of all packages
-        packages = await self.get_all_packages()
+        packages = await self.get_all_packages_by_api()
         if not packages:
             self.logger.error("No packages found or error fetching package list")
             return
@@ -516,18 +514,15 @@ class Berlin(BaseDataDownloader):
         # Progress reporting task
         progress_task = asyncio.create_task(self.progress_reporter())
 
+        semaphore = asyncio.Semaphore(self.max_workers)
+
+        async def process_with_semaphore(package_name: str):
+            async with semaphore:
+                return await self.process_dataset(package_name)
+
         # Process in batches to avoid overwhelming memory
         for i in range(0, len(packages), self.batch_size):
             batch = packages[i : i + self.batch_size]
-
-            # Create semaphore for this batch
-            semaphore = asyncio.Semaphore(self.max_workers)
-
-            async def process_with_semaphore(package_name: str):
-                async with semaphore:
-                    return await self.process_dataset(package_name)
-
-            # Process batch
             tasks = [process_with_semaphore(package) for package in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 

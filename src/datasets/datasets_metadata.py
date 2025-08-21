@@ -114,4 +114,4 @@ class DatasetJSONEncoder(json.JSONEncoder):
 @dataclass
 class Dataset:
     metadata: DatasetMetadata
-    data: str
+    data: list[dict]

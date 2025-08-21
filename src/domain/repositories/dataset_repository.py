@@ -1,15 +1,17 @@
 # src/datasets/repository.py
-from typing import Optional, List, Dict, Any
+from typing import Optional, Any
 from datetime import datetime, UTC
 
 from bson.errors import InvalidId
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorCollection
 from pymongo import ReturnDocument
 from bson import ObjectId
 from pymongo.errors import PyMongoError
 
+from src.datasets.datasets_metadata import Dataset
 from src.infrastructure.logger import get_prefixed_logger
 from src.infrastructure.mongo_db import MongoDBDep
+from src.utils.datasets_utils import sanitize_title
 
 logger = get_prefixed_logger(__name__, "DATASET_REPOSITORY")
 
@@ -17,48 +19,50 @@ logger = get_prefixed_logger(__name__, "DATASET_REPOSITORY")
 class DatasetRepository:
     """Repository for datasets in MongoDB"""
 
-    # TODO: change this class to create collection for each dataset (add field collection everywhere)
-    COLLECTION_NAME = "metadata"
+    META_COLLECTION_NAME = "metadata"
 
     def __init__(self, database: AsyncIOMotorDatabase):
-        self.database = database
-        self.collection = database[self.COLLECTION_NAME]
+        self.db = database
+        self.meta_collection = database[self.META_COLLECTION_NAME]
 
     async def create_indexes(self):
         """Create indexes for better performance"""
         # Index for text search
-        await self.collection.create_index([("title", "text"), ("description", "text")])
-        # Index for filtering
-        await self.collection.create_index("city")
-        await self.collection.create_index("organization")
-        await self.collection.create_index("tags")
-        await self.collection.create_index("created_at")
+        await self.meta_collection.create_index(
+            [("title", "text"), ("description", "text")]
+        )
         # Compound index for common queries
-        await self.collection.create_index([("city", 1), ("organization", 1)])
+        # await self.meta_collection.create_index([("city", 1), ("organization", 1)])
         logger.info("Indexes created successfully")
 
-    async def insert_one(self, dataset: Dict[str, Any]) -> str:
+    async def insert_one(
+        self, dataset: dict[str, Any], collection: AsyncIOMotorCollection
+    ) -> str:
         """Insert single dataset"""
         dataset["created_at"] = datetime.now(UTC)
         dataset["updated_at"] = datetime.now(UTC)
-        result = await self.collection.insert_one(dataset)
+        result = await collection.insert_one(dataset)
         logger.debug(f"Inserted dataset with id: {result.inserted_id}")
         return str(result.inserted_id)
 
-    async def insert_many(self, datasets: List[Dict[str, Any]]) -> List[str]:
+    async def insert_many(
+        self, datasets: list[dict[str, Any]], collection: AsyncIOMotorCollection
+    ) -> list[str]:
         """Insert multiple datasets"""
         for dataset in datasets:
             dataset["created_at"] = datetime.now(UTC)
             dataset["updated_at"] = datetime.now(UTC)
 
-        result = await self.collection.insert_many(datasets)
-        logger.info(f"Inserted {len(result.inserted_ids)} datasets")
+        result = await collection.insert_many(datasets)
+        logger.debug(f"Inserted {len(result.inserted_ids)} datasets")
         return [str(inserted_id) for inserted_id in result.inserted_ids]
 
-    async def find_by_id(self, dataset_id: str) -> Optional[Dict[str, Any]]:
+    async def find_by_id(
+        self, dataset_id: str, collection: AsyncIOMotorCollection
+    ) -> Optional[dict[str, Any]]:
         """Find dataset by ID"""
         try:
-            document = await self.collection.find_one({"_id": ObjectId(dataset_id)})
+            document = await collection.find_one({"_id": ObjectId(dataset_id)})
             if document:
                 document = dict(document)
                 document["_id"] = str(document["_id"])
@@ -67,9 +71,11 @@ class DatasetRepository:
             logger.error(f"Error finding dataset by id {dataset_id}: {e}")
             return None
 
-    async def find_by_external_id(self, external_id: str) -> Optional[Dict[str, Any]]:
+    async def find_by_external_id(
+        self, external_id: str, collection: AsyncIOMotorCollection
+    ) -> Optional[dict[str, Any]]:
         """Find dataset by external ID (from original source)"""
-        document = await self.collection.find_one({"external_id": external_id})
+        document = await collection.find_one({"external_id": external_id})
         if document:
             document = dict(document)
             document["_id"] = str(document["_id"])
@@ -77,13 +83,14 @@ class DatasetRepository:
 
     async def find_all(
         self,
+        collection: AsyncIOMotorCollection,
         skip: int = 0,
         limit: int = 100,
-        filter_dict: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict[str, Any]]:
+        filter_dict: Optional[dict[str, Any]] = None,
+    ) -> list[dict[str, Any]]:
         """Find all datasets with pagination"""
         filter_dict = filter_dict or {}
-        cursor = self.collection.find(filter_dict).skip(skip).limit(limit)
+        cursor = collection.find(filter_dict).skip(skip).limit(limit)
         documents = await cursor.to_list(length=limit)
 
         for doc in documents:
@@ -91,30 +98,12 @@ class DatasetRepository:
 
         return documents
 
-    async def find_by_city(
-        self, city: str, skip: int = 0, limit: int = 100
-    ) -> List[Dict[str, Any]]:
-        """Find datasets by city"""
-        return await self.find_all(skip, limit, {"city": city})
-
-    async def find_by_organization(
-        self, organization: str, skip: int = 0, limit: int = 100
-    ) -> List[Dict[str, Any]]:
-        """Find datasets by organization"""
-        return await self.find_all(skip, limit, {"organization": organization})
-
-    async def find_by_tags(
-        self, tags: List[str], skip: int = 0, limit: int = 100
-    ) -> List[Dict[str, Any]]:
-        """Find datasets by tags (any of the tags)"""
-        return await self.find_all(skip, limit, {"tags": {"$in": tags}})
-
     async def search_text(
         self, query: str, skip: int = 0, limit: int = 100
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Full text search in title and description"""
         cursor = (
-            self.collection.find(
+            self.meta_collection.find(
                 {"$text": {"$search": query}}, {"score": {"$meta": "textScore"}}
             )
             .sort([("score", {"$meta": "textScore"})])
@@ -130,12 +119,12 @@ class DatasetRepository:
 
     async def update_one(
         self, dataset_id: str, update_data: dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         """Update single dataset"""
         try:
             update_data = dict(update_data)  # ensure it's mutable
             update_data["updated_at"] = datetime.now(UTC)
-            result = await self.collection.find_one_and_update(
+            result = await self.meta_collection.find_one_and_update(
                 {"_id": ObjectId(dataset_id)},
                 {"$set": update_data},
                 return_document=ReturnDocument.AFTER,
@@ -151,7 +140,9 @@ class DatasetRepository:
     async def delete_one(self, dataset_id: str) -> bool:
         """Delete single dataset"""
         try:
-            result = await self.collection.delete_one({"_id": ObjectId(dataset_id)})
+            result = await self.meta_collection.delete_one(
+                {"_id": ObjectId(dataset_id)}
+            )
             return result.deleted_count > 0
         except Exception as e:
             logger.error(f"Error deleting dataset {dataset_id}: {e}")
@@ -159,19 +150,19 @@ class DatasetRepository:
 
     async def delete_all(self) -> int:
         """Delete all datasets (use with caution!)"""
-        result = await self.collection.delete_many({})
+        result = await self.meta_collection.delete_many({})
         logger.warning(f"Deleted {result.deleted_count} datasets")
         return result.deleted_count
 
-    async def count(self, filter_dict: Optional[Dict[str, Any]] = None) -> int:
+    async def count(self, filter_dict: Optional[dict[str, Any]] = None) -> int:
         """Count datasets"""
         filter_dict = filter_dict or {}
-        return await self.collection.count_documents(filter_dict)
+        return await self.meta_collection.count_documents(filter_dict)
 
     async def exists(self, dataset_id: str) -> bool:
         """Check if dataset exists"""
         try:
-            count = await self.collection.count_documents(
+            count = await self.meta_collection.count_documents(
                 {"_id": ObjectId(dataset_id)}, limit=1
             )
             return count > 0
@@ -180,21 +171,21 @@ class DatasetRepository:
 
     async def exists_by_external_id(self, external_id: str) -> bool:
         """Check if dataset exists by external ID"""
-        count = await self.collection.count_documents(
+        count = await self.meta_collection.count_documents(
             {"external_id": external_id}, limit=1
         )
         return count > 0
 
-    async def get_distinct_values(self, field: str) -> List[Any]:
+    async def get_distinct_values(self, field: str) -> list[Any]:
         """Get distinct values for a field (e.g., all unique cities)"""
-        return await self.collection.distinct(field)
+        return await self.meta_collection.distinct(field)
 
-    async def aggregate(self, pipeline: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    async def aggregate(self, pipeline: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Run aggregation pipeline"""
-        cursor = self.collection.aggregate(pipeline)
+        cursor = self.meta_collection.aggregate(pipeline)
         return await cursor.to_list(length=None)
 
-    async def get_statistics(self) -> Dict[str, Any]:
+    async def get_statistics(self) -> dict[str, Any]:
         """Get collection statistics"""
         total = await self.count()
         cities = await self.get_distinct_values("city")
@@ -217,20 +208,31 @@ class DatasetRepository:
             "organizations": organizations,
         }
 
-    async def batch_insert(
-        self, datasets: List[Dict[str, Any]], batch_size: int = 1000
-    ) -> List[str]:
-        inserted_ids = []
-        for i in range(0, len(datasets), batch_size):
-            batch = datasets[i : i + batch_size]
+    async def index_dataset(self, dataset: Dataset, batch_size: int = 1000):
+        # region index metadata
+        meta = dataset.metadata.to_dict()
+        now = datetime.now(UTC)
+        meta["created_at"] = now
+        meta["updated_at"] = now
+        meta_id = await self.insert_one(meta, self.meta_collection)
+        safe_title = sanitize_title(dataset.metadata.title)
+        dataset_collection_name = safe_title + "_" + meta_id
+        await self.db.create_collection(dataset_collection_name)
+        # endregion
+
+        # region index data
+        inserted = 1
+        for i in range(0, len(dataset.data), batch_size):
+            batch = dataset.data[i : i + batch_size]
             now = datetime.now(UTC)
             for dataset in batch:
                 dataset["created_at"] = now
                 dataset["updated_at"] = now
-            result = await self.collection.insert_many(batch)
-            inserted_ids.extend(str(_id) for _id in result.inserted_ids)
-        logger.info(f"Inserted {len(inserted_ids)} datasets in batches of {batch_size}")
-        return inserted_ids
+            result = await self.db[dataset_collection_name].insert_many(batch)
+            inserted += len(result.inserted_ids)
+        logger.info(f"Inserted 1 meta + {inserted} datasets in batches of {batch_size}")
+        return inserted
+        # endregion
 
 
 # Dependency injection function

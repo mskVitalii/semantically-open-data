@@ -16,7 +16,7 @@ def safe_delete(path: Path, logger: Logger | logging.LoggerAdapter):
         logger.debug(f"Path doesn't exist: {path}")
 
 
-def sanitize_filename(filename: str) -> str:
+def sanitize_title(filename: str) -> str:
     """
     Sanitize filename by removing invalid characters
 

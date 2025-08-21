@@ -10,7 +10,6 @@ import pytest
 
 # Import the module to test (assuming it's named text_extraction.py)
 from src.utils.embeddings_utils import (
-    extract_data_content,
     get_csv_example,
     get_json_example,
     json_to_searchable_string,
@@ -80,49 +79,6 @@ def nested_json_data():
         ],
         "metadata": {"created": "2024-01-01", "version": 2},
     }
-
-
-# =============================================================================
-# TEST DATA CONTENT EXTRACTION
-# =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_extract_data_content_csv(temp_dir, sample_csv_data):
-    """Test data content extraction from CSV files"""
-    csv_file = temp_dir / "data.csv"
-    sample_csv_data.to_csv(csv_file, index=False)
-
-    result = await extract_data_content(temp_dir)
-
-    assert "CSV_DATA:" in result
-    assert "Alice" in result or "Bob" in result  # At least one name should be present
-
-
-@pytest.mark.asyncio
-async def test_extract_data_content_json(temp_dir, sample_json_data):
-    """Test data content extraction from JSON files"""
-    json_file = temp_dir / "data.json"
-    with open(json_file, "w") as f:
-        json.dump(sample_json_data, f)
-
-    result = await extract_data_content(temp_dir)
-
-    assert "JSON_DATA:" in result
-    assert "Widget" in result or "Gadget" in result
-
-
-@pytest.mark.asyncio
-async def test_extract_data_content_skip_metadata(temp_dir, sample_metadata):
-    """Test that metadata.json is skipped in data content extraction"""
-    metadata_file = temp_dir / "metadata.json"
-    with open(metadata_file, "w") as f:
-        json.dump(sample_metadata, f)
-
-    result = await extract_data_content(temp_dir)
-
-    # Should not contain metadata content as data
-    assert "JSON_DATA:" not in result or "Test Dataset" not in result
 
 
 # =============================================================================

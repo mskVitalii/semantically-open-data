@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import sys
+from itertools import chain
 from pathlib import Path
 from typing import Dict, Optional, Set
 
@@ -14,11 +15,12 @@ from playwright.async_api import async_playwright, ViewportSize, Error
 from src.datasets.base_data_downloader import BaseDataDownloader
 from src.datasets.datasets_metadata import (
     DatasetMetadataWithContent,
+    Dataset,
 )
 from src.infrastructure.logger import get_prefixed_logger
 from src.utils.datasets_utils import (
     safe_delete,
-    sanitize_filename,
+    sanitize_title,
     skip_formats,
 )
 from src.utils.file import save_file_with_task
@@ -354,7 +356,7 @@ class Berlin(BaseDataDownloader):
             resources = package.get("resources", [])
 
             # Create dataset directory
-            safe_title = sanitize_filename(title)
+            safe_title = sanitize_title(title)
             dataset_dir = self.output_dir / f"{package_name}_{safe_title}"
 
             # Skip if already processed successfully
@@ -412,16 +414,15 @@ class Berlin(BaseDataDownloader):
                 resource_format = resource.get("format", "")
                 extension = self.get_file_extension(url, resource_format)
 
-                filename = sanitize_filename(f"{resource_name}_{i}{extension}")
+                filename = sanitize_title(f"{resource_name}_{i}{extension}")
                 filepath = dataset_dir / filename
 
                 task = self.download_file(url, filepath)
                 download_tasks.append(task)
 
             # Wait for downloads
-            if download_tasks:
-                results = await asyncio.gather(*download_tasks, return_exceptions=True)
-                success_count = sum(1 for r in results if r[0] is True)
+            results = await asyncio.gather(*download_tasks, return_exceptions=True)
+            success_count = sum(1 for r in results if r[0] is True)
 
             if success_count > 0:
                 self.logger.debug(f"Downloaded {success_count} files for: {title}")
@@ -439,18 +440,16 @@ class Berlin(BaseDataDownloader):
                     country="Germany",
                 )
 
-                # TODO: add the dataset to buffer
-
                 if self.is_file_system:
                     save_file_with_task(metadata_file, package_meta.to_json())
-
-                # package_meta.fields = await extract_data_content(dataset_dir)
 
                 if self.is_embeddings and self.vector_db_buffer:
                     await self.vector_db_buffer.add(package_meta)
 
                 if self.is_store and self.dataset_db_buffer:
-                    await self.dataset_db_buffer.add(package_meta)
+                    data = list(chain.from_iterable(res[1] for res in results))
+                    dataset = Dataset(metadata=package_meta, data=data)
+                    await self.dataset_db_buffer.add(dataset)
             else:
                 # Clean up empty dataset
                 if self.is_file_system:

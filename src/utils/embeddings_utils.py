@@ -40,78 +40,7 @@ def format_metadata_text(metadata: dict) -> str:
         if isinstance(value, str) and value.strip()
     ]
     result = " ".join(text_parts)
-    logger.debug(f"Extracted metadata text: {len(result)} chars")
     return result
-
-
-# 1
-async def extract_data_content(dataset_path: Path) -> str:
-    """
-    Extract example data content from CSV/JSON files
-
-    Args:
-        dataset_path: Path to dataset directory
-
-    Returns:
-        Formatted example data text
-    """
-    content_parts = []
-    tasks = []
-
-    # Process CSV files
-    csv_files = list(dataset_path.glob("*.csv"))
-    for csv_file in csv_files:
-        task = process_csv_file(csv_file)
-        tasks.append(task)
-
-    # Process JSON files (skip metadata.json)
-    json_files = [f for f in dataset_path.glob("*.json") if f.name != "metadata.json"]
-    for json_file in json_files:
-        task = process_json_file(json_file)
-        tasks.append(task)
-
-    # Wait for all tasks to complete
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    for result in results:
-        if isinstance(result, str) and result:
-            content_parts.append(result)
-        elif isinstance(result, Exception):
-            logger.warning(f"Task failed with error: {result}")
-
-    result = " ".join(content_parts)
-    logger.debug(
-        f"Extracted data content: {len(content_parts)} files, {len(result)} chars"
-    )
-    return result
-
-
-# 2
-async def process_csv_file(csv_file: Path) -> str:
-    """Process a single CSV file asynchronously"""
-    try:
-        example = await get_csv_example(csv_file)
-        if example:
-            formatted = json_to_searchable_string(example, max_length=200)
-            logger.debug(f"Extracted CSV content from {csv_file.name}")
-            return f"CSV_DATA: {formatted}"
-    except Exception as e:
-        logger.warning(f"Failed to extract CSV content from {csv_file}: {e}")
-    return ""
-
-
-# 3
-async def process_json_file(json_file: Path) -> str:
-    """Process a single JSON file asynchronously"""
-    try:
-        example = await get_json_example(json_file)
-        if example:
-            formatted = json_to_searchable_string(example, max_length=200)
-            logger.debug(f"Extracted JSON content from {json_file.name}")
-            return f"JSON_DATA: {formatted}"
-    except Exception as e:
-        logger.warning(f"Failed to extract JSON content from {json_file}: {e}")
-    return ""
 
 
 # endregion

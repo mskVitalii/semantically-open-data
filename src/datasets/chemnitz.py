@@ -4,6 +4,7 @@ import csv
 import json
 import logging
 import sys
+from itertools import chain
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -13,8 +14,9 @@ import pandas as pd
 from src.datasets.base_data_downloader import BaseDataDownloader
 from src.datasets.datasets_metadata import (
     DatasetMetadataWithContent,
+    Dataset,
 )
-from src.utils.datasets_utils import sanitize_filename, safe_delete
+from src.utils.datasets_utils import sanitize_title, safe_delete
 from src.infrastructure.logger import get_prefixed_logger
 from src.utils.file import save_file_with_task
 
@@ -107,7 +109,7 @@ class Chemnitz(BaseDataDownloader):
                     async with self.session.get(query_url, params=params) as response:
                         if response.status == 200:
                             if self.is_file_system:
-                                safe_title = sanitize_filename(layer_name)
+                                safe_title = sanitize_title(layer_name)
                                 dataset_dir = self.output_dir / safe_title
                                 dataset_dir.mkdir(exist_ok=True)
 
@@ -206,7 +208,7 @@ class Chemnitz(BaseDataDownloader):
                 return False
 
             # Prepare folder
-            safe_title = sanitize_filename(title)
+            safe_title = sanitize_title(title)
             if self.is_file_system:
                 dataset_dir = self.output_dir / safe_title
                 metadata_file = dataset_dir / "metadata.json"
@@ -275,7 +277,9 @@ class Chemnitz(BaseDataDownloader):
                     await self.vector_db_buffer.add(package_meta)
 
                 if self.is_store and self.dataset_db_buffer:
-                    await self.dataset_db_buffer.add(package_meta)
+                    data = list(chain.from_iterable(res[1] for res in results))
+                    dataset = Dataset(metadata=package_meta, data=data)
+                    await self.dataset_db_buffer.add(dataset)
 
                 if self.is_file_system:
                     save_file_with_task(

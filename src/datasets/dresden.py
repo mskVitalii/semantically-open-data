@@ -18,9 +18,10 @@ from aiohttp import (
 from src.datasets.base_data_downloader import BaseDataDownloader
 from src.datasets.datasets_metadata import (
     DatasetMetadataWithContent,
+    Dataset,
 )
 from src.infrastructure.logger import get_prefixed_logger
-from src.utils.datasets_utils import sanitize_filename, safe_delete
+from src.utils.datasets_utils import sanitize_title, safe_delete
 from src.utils.file import save_file_with_task
 
 
@@ -437,7 +438,7 @@ class Dresden(BaseDataDownloader):
             return False
 
         # Directory creation
-        safe_title = sanitize_filename(title)
+        safe_title = sanitize_title(title)
         dataset_dir = self.output_dir / f"{context_id}_{entry_id}_{safe_title}"
         if self.is_file_system:
             dataset_dir.mkdir(exist_ok=True)
@@ -478,15 +479,15 @@ class Dresden(BaseDataDownloader):
                 url = _download_info["url"]
                 file_title = _download_info.get("title", "file")
                 extension = _download_info.get("extension", "")
-                filename = sanitize_filename(f"{file_title}{extension}")
+                filename = sanitize_title(f"{file_title}{extension}")
                 return await self.download_file(url, filename, dataset_dir)
 
         # Try to download files
         success = False
-        dataset = []
+        data = []
 
         for download_info in sorted_downloads:
-            success, dataset = await download_with_semaphore(download_info)
+            success, data = await download_with_semaphore(download_info)
             if success:
                 self.logger.debug(
                     f"Successfully downloaded {download_info.get('extension')} file"
@@ -495,7 +496,6 @@ class Dresden(BaseDataDownloader):
 
         if success:
             # Save metadata
-            # TODO: add the dataset to buffer
             if self.is_file_system:
                 metadata_file = dataset_dir / "metadata.json"
                 content = package_meta.to_json()
@@ -507,7 +507,8 @@ class Dresden(BaseDataDownloader):
                 await self.vector_db_buffer.add(package_meta)
 
             if self.is_store and self.dataset_db_buffer:
-                await self.dataset_db_buffer.add(package_meta)
+                dataset = Dataset(metadata=package_meta, data=data)
+                await self.dataset_db_buffer.add(dataset)
         else:
             # Clean up empty dataset
             if self.is_file_system:

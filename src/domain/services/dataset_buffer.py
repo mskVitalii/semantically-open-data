@@ -1,19 +1,14 @@
 import asyncio
 
-from src.datasets.datasets_metadata import DatasetMetadataWithContent
+from src.datasets.datasets_metadata import Dataset
 from src.domain.repositories.dataset_repository import DatasetRepository
 from src.infrastructure.logger import get_prefixed_logger
 from src.utils.buffer_abc import AsyncBuffer
 
 logger = get_prefixed_logger(__name__, "DATASET_DB_BUFFER")
 
-# TODO:
-#  1. Store the metadata (with the collection name for dataset)
-#  2. Create the collection
-#  3. Save the actual dataset to the collection
 
-
-class DatasetDBBuffer(AsyncBuffer[DatasetMetadataWithContent]):
+class DatasetDBBuffer(AsyncBuffer[Dataset]):
     """Buffer for batching dataset storing"""
 
     def __init__(self, repository: DatasetRepository, buffer_size: int = 150):
@@ -26,13 +21,13 @@ class DatasetDBBuffer(AsyncBuffer[DatasetMetadataWithContent]):
         """
         self.repository = repository
         self.buffer_size = buffer_size
-        self._buffer: list[DatasetMetadataWithContent] = []
+        self._buffer: list[Dataset] = []
         self._lock = asyncio.Lock()
         self._total_stored = 0
 
     # region Buffer logic
 
-    async def add(self, dataset: DatasetMetadataWithContent) -> None:
+    async def add(self, dataset: Dataset) -> None:
         """
         Add a single dataset to the buffer
 
@@ -93,7 +88,7 @@ class DatasetDBBuffer(AsyncBuffer[DatasetMetadataWithContent]):
 
     async def _flush_internal(self) -> int:
         """
-        Internal flush method
+        Internal flush method with semaphore for parallel processing control
 
         Returns:
             Number of datasets indexed
@@ -112,15 +107,45 @@ class DatasetDBBuffer(AsyncBuffer[DatasetMetadataWithContent]):
 
             async def insert_and_cleanup():
                 try:
-                    await self.repository.batch_insert(
-                        [meta.to_dict() for meta in data_to_store],
-                        batch_size=self.buffer_size,
+                    # Create semaphore to limit concurrent operations
+                    # Adjust max_concurrent based on your system's capacity
+                    max_concurrent = min(
+                        10, len(data_to_store)
+                    )  # Max 10 parallel tasks
+                    semaphore = asyncio.Semaphore(max_concurrent)
+
+                    async def index_single_dataset(dataset) -> int:
+                        async with semaphore:
+                            try:
+                                return await self.repository.index_dataset(
+                                    dataset,
+                                    self.buffer_size,
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to index dataset: {e}")
+                                return 0
+
+                    # Process all datasets concurrently with semaphore control
+                    results = await asyncio.gather(
+                        *[index_single_dataset(dataset) for dataset in data_to_store],
+                        return_exceptions=False,
                     )
+
+                    # Count successful indexing operations
+                    successful_count = sum(1 for r in results if r > 0)
+
+                    # Update total stored count
                     async with self._lock:
-                        self._total_stored += data_count
-                    logger.info(
-                        f"Successfully flushed {data_count} datasets. Total indexed: {self._total_stored}"
-                    )
+                        self._total_stored += successful_count
+
+                    if successful_count < data_count:
+                        logger.warning(
+                            f"Partially flushed: {successful_count}/{data_count} datasets indexed"
+                        )
+                    else:
+                        logger.info(
+                            f"Successfully flushed {successful_count} datasets. Total indexed: {self._total_stored}"
+                        )
 
                 except Exception as _e:
                     logger.error(f"Background insert failed: {_e}")

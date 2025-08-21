@@ -13,9 +13,10 @@ import pandas as pd
 from src.datasets.base_data_downloader import BaseDataDownloader
 from src.datasets.datasets_metadata import (
     DatasetMetadataWithContent,
+    Dataset,
 )
 from src.infrastructure.logger import get_prefixed_logger
-from src.utils.datasets_utils import sanitize_filename, safe_delete
+from src.utils.datasets_utils import sanitize_title, safe_delete
 from src.utils.file import save_file_with_task
 
 
@@ -128,7 +129,7 @@ class Leipzig(BaseDataDownloader):
 
                         else:
                             # Determine filename
-                            safe_name = sanitize_filename(resource_name)
+                            safe_name = sanitize_title(resource_name)
                             filename = f"{safe_name}{dataset_format}"
 
                             # region Avoid duplication
@@ -196,7 +197,7 @@ class Leipzig(BaseDataDownloader):
             self.logger.debug(f"\t📊 Target resources: {len(target_resources)}")
 
             # Skip if already processed
-            safe_title = sanitize_filename(package_title)
+            safe_title = sanitize_title(package_title)
             if self.is_file_system:
                 dataset_dir = self.output_dir / safe_title
                 metadata_file = dataset_dir / "metadata.json"
@@ -245,9 +246,9 @@ class Leipzig(BaseDataDownloader):
 
             # Try to download a resource
             success = False
-            dataset = []
+            data = []
             for resource in sorted_resources:
-                success, dataset = await download_with_semaphore(resource, safe_title)
+                success, data = await download_with_semaphore(resource, safe_title)
                 if success:
                     await self.update_stats("files_downloaded")
                     break  # Stop after first successful download
@@ -255,7 +256,6 @@ class Leipzig(BaseDataDownloader):
                     await self.update_stats("errors")
 
             if success:
-                # TODO: add the dataset to buffer
                 # Save metadata
                 if self.is_file_system:
                     dataset_dir = self.output_dir / safe_title
@@ -266,7 +266,8 @@ class Leipzig(BaseDataDownloader):
                     await self.vector_db_buffer.add(package_meta)
 
                 if self.is_store and self.dataset_db_buffer:
-                    await self.dataset_db_buffer.add(package_meta)
+                    dataset = Dataset(metadata=package_meta, data=data)
+                    await self.dataset_db_buffer.add(dataset)
             else:
                 # Clean up empty dataset
                 if self.is_file_system:

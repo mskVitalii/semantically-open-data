@@ -1,8 +1,13 @@
+import json
+
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from dataclasses import dataclass
 
-from src.datasets.datasets_metadata import DatasetMetadataWithContent
+from src.datasets.datasets_metadata import (
+    DatasetMetadataWithContent,
+    DatasetJSONEncoder,
+)
 
 
 class DatasetSearchRequest(BaseModel):
@@ -22,6 +27,15 @@ class DatasetResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+    def to_json(self) -> str:
+        """Convert to JSON string"""
+        return json.dumps(
+            self,
+            indent=2,
+            ensure_ascii=False,
+            cls=DatasetJSONEncoder,
+        )
 
 
 class DatasetSearchResponse(BaseModel):
@@ -45,3 +59,6 @@ class SearchCriteria:
     def __post_init__(self):
         if self.tags is None:
             self.tags = []
+
+
+# class QAResponse(BaseModel):

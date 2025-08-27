@@ -5,6 +5,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 
 from src.datasets_api.router import v1_router
+from src.domain.services.llm_service import get_llm_service
 from src.infrastructure.config import MONGO_INITDB_DATABASE
 from src.infrastructure.logger import get_logger
 from src.infrastructure.mongo_db import (
@@ -14,6 +15,8 @@ from src.infrastructure.mongo_db import (
 
 logger = get_logger(__name__)
 
+# region FAST_API
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -21,9 +24,11 @@ async def lifespan(_: FastAPI):
 
     manager = get_mongodb_manager()
     await manager.connect()
+    llm_service = get_llm_service()
 
     yield
 
+    await llm_service.close_llm_session()
     await manager.disconnect()
     logger.info("Application shutdown complete")
 
@@ -44,6 +49,10 @@ app.add_middleware(
 )
 
 app.include_router(v1_router)
+
+# endregion
+
+# region DEFAULT ROUTES
 
 
 @app.get("/")
@@ -112,6 +121,11 @@ async def detailed_health_check(client: MongoClientDep):
     return health_status
 
 
+# endregion
+
+# region IGNITE
+
+
 def main():
     """Main MVP function"""
     run_dev()
@@ -133,3 +147,4 @@ if __name__ == "__main__":
     main()
 # run_dev()
 # logger.info("http://localhost:8000/docs")
+# endregion

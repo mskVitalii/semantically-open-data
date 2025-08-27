@@ -28,5 +28,8 @@ MONGODB_URI = os.getenv(
     f"mongodb://{MONGO_USER}:{MONGO_PASSWORD}@mongodb:{MONGO_PORT}/{MONGO_INITDB_DATABASE}?authSource={MONGO_INITDB_DATABASE}",
 )
 
+LLM_HOST = os.getenv("LLM_HOST", "localhost")
+LLM_PORT = int(os.getenv("LLM_PORT", 11434))
+LLM_URL = f"http://{LLM_HOST}:{LLM_PORT}"
 
 os.environ["GRPC_VERBOSITY"] = "NONE"

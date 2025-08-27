@@ -1,5 +1,6 @@
 # src/datasets_api/service.py
 from fastapi import Depends
+from numpy import ndarray
 
 from src.datasets.bootstrap import bootstrap_data
 from src.datasets.datasets_metadata import DatasetMetadataWithContent
@@ -13,6 +14,7 @@ from src.datasets_api.datasets_dto import (
     DatasetResponse,
 )
 from src.infrastructure.logger import get_prefixed_logger
+from src.vector_search.embedder import embed
 from src.vector_search.vector_db import VectorDB, get_vector_db
 
 logger = get_prefixed_logger(__name__, "DATASET_SERVICE")
@@ -37,8 +39,9 @@ class DatasetService:
         #     offset=request.offset,
         # )
 
-        # TODO: extend request
-        datasets = await self.vector_db.search(request.query, None)
+        # Generate query embedding
+        embedding = await embed(request.query)
+        datasets = await self.vector_db.search(embedding)
 
         metadatas: list[DatasetResponse] = []
         for dataset in datasets:
@@ -69,6 +72,23 @@ class DatasetService:
             limit=request.limit,
             offset=request.offset,
         )
+
+    async def search_datasets_with_embeddings(
+        self, embeddings: ndarray
+    ) -> list[DatasetResponse]:
+        """Search for datasets"""
+        datasets = await self.vector_db.search(embeddings)
+
+        logger.info(datasets)
+        return [
+            DatasetResponse(
+                metadata=DatasetMetadataWithContent(
+                    **{k: v for k, v in dataset.payload.items() if k != "content"}
+                ),
+                score=dataset.score,
+            )
+            for dataset in datasets
+        ]
 
     async def bootstrap_datasets(self) -> bool:
         """Bootstrap datasets - clear and reload all data"""

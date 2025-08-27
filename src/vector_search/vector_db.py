@@ -1,6 +1,8 @@
 import asyncio
 import uuid
 from typing import List, Optional
+
+from numpy import ndarray
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http.models import QueryRequest, ScoredPoint
 from qdrant_client.models import (
@@ -23,7 +25,7 @@ from src.infrastructure.config import (
     QDRANT_COLLECTION_NAME,
 )
 from src.infrastructure.logger import get_prefixed_logger
-from src.vector_search.embedder import embed_batch, embed
+from src.vector_search.embedder import embed_batch
 
 logger = get_prefixed_logger(__name__, "VECTOR_DB")
 
@@ -31,10 +33,12 @@ logger = get_prefixed_logger(__name__, "VECTOR_DB")
 class VectorDB:
     """Vector DB system with gRPC support"""
 
-    def __init__(self, use_grpc: bool = True):
+    # region LIFE CYCLE
+
+    def __init__(self):
         """Initialize with gRPC or HTTP client"""
         # Use environment variable if not explicitly set
-        self.use_grpc = use_grpc if use_grpc is not None else USE_GRPC
+        self.use_grpc = USE_GRPC
         self.qdrant: AsyncQdrantClient | None = None
 
     async def initialize(self):
@@ -42,10 +46,6 @@ class VectorDB:
         self.qdrant = await get_qdrant(self.use_grpc)
         await self._wait_for_qdrant()
         await self.setup_collection()
-
-    # async def __aenter__(self):
-    #     """Async context manager entry"""
-    #     return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit"""
@@ -69,6 +69,8 @@ class VectorDB:
                     await asyncio.sleep(retry_delay)
                 else:
                     raise RuntimeError(f"Qdrant failed to become ready: {e}")
+
+    # endregion
 
     async def setup_collection(self):
         """Create Qdrant collection if not exists"""
@@ -140,15 +142,12 @@ class VectorDB:
         logger.info(f"Successfully indexed {len(datasets)} datasets")
 
     async def search(
-        self, query: str, city_filter: Optional[str] = None, limit: int = 5
+        self,
+        query_embedding: ndarray,
+        city_filter: Optional[str] = None,
+        limit: int = 5,
     ) -> list[ScoredPoint]:
         """Search for datasets using query_points method"""
-        logger.info(f"\nSearching for: '{query}'")
-        if city_filter:
-            logger.info(f"Filtering by city: {city_filter}")
-
-        # Generate query embedding (assuming embedder is sync)
-        query_embedding = await embed(query)
 
         # Build filter if city specified
         search_filter = None
@@ -253,6 +252,8 @@ class VectorDB:
             raise
 
 
+# region DI
+
 vector_db: VectorDB | None = None
 
 
@@ -260,7 +261,7 @@ async def get_vector_db(use_grpc: bool = True) -> VectorDB:
     """Helper function to create and initialize the async Qdrant client"""
     global vector_db
     if vector_db is None:
-        vector_db = VectorDB(use_grpc=use_grpc)
+        vector_db = VectorDB()
         await vector_db.initialize()
     return vector_db
 
@@ -298,3 +299,6 @@ async def get_qdrant(use_grpc: bool = True) -> AsyncQdrantClient:
     if qdrant is None:
         qdrant = await init_qdrant(use_grpc)
     return qdrant
+
+
+# endregion

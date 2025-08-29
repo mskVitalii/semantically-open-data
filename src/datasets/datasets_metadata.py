@@ -87,7 +87,7 @@ class DatasetMetadataWithContent(DatasetMetadata):
     def to_payload(self) -> Dict[str, Any]:
         """Convert to Qdrant payload including content"""
         payload = super().to_payload()
-        payload["content"] = self.fields
+        payload["fields"] = self.fields
         return payload
 
     def to_json(self) -> str:

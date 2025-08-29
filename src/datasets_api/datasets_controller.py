@@ -5,11 +5,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from starlette.responses import StreamingResponse
 
 from .datasets_dto import DatasetSearchRequest, DatasetSearchResponse
+from .qa_cache.qa_cache import check_qa_cache, set_qa_cache
 from ..domain.services.dataset_service import DatasetService, get_dataset_service
 from ..domain.services.llm_service import (
     LLMService,
     get_llm_service_dep,
 )
+from ..infrastructure.config import IS_DOCKER
 from ..infrastructure.logger import get_prefixed_logger
 from ..vector_search.embedder import embed_batch
 
@@ -58,22 +60,48 @@ async def bootstrap(
 
 
 # region QA
+async def step_0_llm_questions(
+    step: int, question: str, llm_service: LLMService
+) -> list[dict[str, int]]:
+    logger.info(f"step: {step}. LLM QUESTIONS start")
+    start_0 = time.perf_counter()
+
+    research_questions = await llm_service.get_research_questions(question)
+    research_questions_with_id = [
+        {**q, "id": i} for i, q in enumerate(research_questions)
+    ]
+    elapsed_0 = time.perf_counter() - start_0
+    logger.info(f"step: {step}. LLM QUESTIONS end (elapsed: {elapsed_0:.2f}s)")
+    logger.info(research_questions_with_id)
+    return research_questions_with_id
+
+
+async def step_1_embeddings(
+    step: int, research_questions_with_id: list[dict[str, int]]
+):
+    logger.info(f"step: {step}. EMBEDDINGS start")
+    start_1 = time.perf_counter()
+
+    questions_list = [q.get("question", "") for q in research_questions_with_id]
+    embeddings = await embed_batch(questions_list)
+    elapsed_1 = time.perf_counter() - start_1
+    logger.info(f"step: {step}. EMBEDDINGS end (elapsed: {elapsed_1:.2f}s)")
+    return embeddings
+
+
 async def generate_events(
     question: str, datasets_service: DatasetService, llm_service: LLMService
 ):
     step = 0
     try:
         # region 0. LLM QUESTIONS
-        logger.info(f"step: {step}. LLM QUESTIONS start")
-        start_0 = time.perf_counter()
-
-        research_questions = await llm_service.get_research_questions(question)
-        research_questions_with_id = [
-            {**q, "id": i} for i, q in enumerate(research_questions)
-        ]
-        elapsed_0 = time.perf_counter() - start_0
-        logger.info(f"step: {step}. LLM QUESTIONS end (elapsed: {elapsed_0:.2f}s)")
-        logger.info(research_questions_with_id)
+        research_questions_with_id = None
+        if not IS_DOCKER:
+            research_questions_with_id = await check_qa_cache(question, step)
+        if research_questions_with_id is None:
+            research_questions_with_id = await step_0_llm_questions(
+                step, question, llm_service
+            )
         yield f"data: {
             json.dumps(
                 {
@@ -86,6 +114,8 @@ async def generate_events(
                 }
             )
         }\n\n"
+        if IS_DOCKER:
+            await set_qa_cache(question, step, research_questions_with_id)
         step += 1
         # endregion
 
@@ -94,17 +124,14 @@ async def generate_events(
         # mb I should provide IDs within the full system to keep the order & do not mix questions embeddings
 
         # region 1. EMBEDDINGS
-        logger.info(f"step: {step}. EMBEDDINGS start")
-        start_1 = time.perf_counter()
-
-        questions_list = [q.get("question", "") for q in research_questions_with_id]
-        embeddings = await embed_batch(questions_list)
+        embeddings = None
+        if not IS_DOCKER:
+            embeddings = await check_qa_cache(question, step)
+        if embeddings is None:
+            embeddings = await step_1_embeddings(step, research_questions_with_id)
         embeddings_with_id_to_list = [
             {"embeddings": q.tolist(), "id": i} for i, q in enumerate(embeddings)
         ]
-        elapsed_1 = time.perf_counter() - start_1
-        logger.info(f"step: {step}. EMBEDDINGS end (elapsed: {elapsed_1:.2f}s)")
-
         yield f"data: {
             json.dumps(
                 {
@@ -114,7 +141,8 @@ async def generate_events(
                 }
             )
         }\n\n"
-
+        if IS_DOCKER:
+            await set_qa_cache(question, step, embeddings)
         step += 1
         # endregion
 
@@ -135,7 +163,10 @@ async def generate_events(
                         'step': step,
                         'sub_step': i,
                         'status': 'OK',
-                        'data': {'id': i, 'datasets': datasets},
+                        'data': {
+                            'id': i,
+                            'datasets': [ds.to_dict() for ds in datasets],
+                        },
                     }
                 )
             }\n\n"
@@ -151,14 +182,10 @@ async def generate_events(
 
         # endregion
 
-        # region 3. INTERPRETATION
-
-        # 3.1 определить для каждого запроса, что может быть - среднее / сумма
-
+        # region 4. INTERPRETATION
         # endregion
 
         # TODO: ask LLM for each to create short paragraph. Include link to the datasets
-        #   yield интерпретацию всех этих данных нейронкой
         yield "data: [DONE]\n\n"
     except Exception as e:
         yield f"data: {json.dumps({'step': step, 'status': 'error', 'error': str(e)})}\n\n"
@@ -166,7 +193,9 @@ async def generate_events(
 
 @router.get("/qa")
 async def stream(
-    question: str = Query(None, description="Ask the system"),
+    question: str = Query(
+        "What is the color of grass in Germany?", description="Ask the system"
+    ),
     datasets_service: DatasetService = Depends(get_dataset_service),
     llm_service: LLMService = Depends(get_llm_service_dep),
 ):

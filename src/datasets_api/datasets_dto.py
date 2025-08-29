@@ -25,23 +25,27 @@ class DatasetResponse(BaseModel):
     score: float
     metadata: DatasetMetadataWithContent
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
     def to_json(self) -> str:
-        """Convert to JSON string"""
+        data = self.model_dump()
+        if isinstance(self.metadata, DatasetMetadataWithContent):
+            data["metadata"] = self.metadata.to_json()
         return json.dumps(
-            self,
+            data,
             indent=2,
             ensure_ascii=False,
             cls=DatasetJSONEncoder,
         )
 
+    def to_dict(self):
+        return self.model_dump()
+
 
 class DatasetSearchResponse(BaseModel):
     """DTO for dataset search response"""
 
-    datasets: List[DatasetResponse]
+    datasets: list[DatasetResponse]
     total: int
     limit: int
     offset: int
@@ -62,3 +66,11 @@ class SearchCriteria:
 
 
 # class QAResponse(BaseModel):
+if __name__ == "__main__":
+    resp = DatasetResponse(
+        score=0.95, metadata=DatasetMetadataWithContent(id="123", title="Demo dataset")
+    )
+
+    print("model_dump():", resp.model_dump())
+    print("json.dumps():", json.dumps(resp.model_dump(), indent=2, ensure_ascii=False))
+    print("pydantic .model_dump_json():", resp.model_dump_json(indent=2))

@@ -209,27 +209,41 @@ class DatasetRepository:
         }
 
     async def index_dataset(self, dataset: Dataset, batch_size: int = 1000):
+        if not isinstance(dataset, Dataset):
+            raise Exception("dataset is not Dataset type. WTF?")
+
+        if len(dataset.data) == 0:
+            return 0
+
         # region index metadata
         meta = dataset.metadata.to_dict()
-        now = datetime.now(UTC)
-        meta["created_at"] = now
-        meta["updated_at"] = now
-        meta_id = await self.insert_one(meta, self.meta_collection)
         safe_title = sanitize_title(dataset.metadata.title)
-        dataset_collection_name = safe_title + "_" + meta_id
-        await self.db.create_collection(dataset_collection_name)
+        existing_meta = await self.meta_collection.find_one(
+            {"title": dataset.metadata.title}
+        )
+        if existing_meta:
+            meta_id = str(existing_meta["_id"])
+        else:
+            now = datetime.now(UTC)
+            meta["created_at"] = now
+            meta["updated_at"] = now
+            meta_id = await self.insert_one(meta, self.meta_collection)
         # endregion
 
         # region index data
+        dataset_collection_name = safe_title + "_" + meta_id
         inserted = 1
         for i in range(0, len(dataset.data), batch_size):
-            batch = dataset.data[i : i + batch_size]
-            now = datetime.now(UTC)
-            for dataset in batch:
-                dataset["created_at"] = now
-                dataset["updated_at"] = now
-            result = await self.db[dataset_collection_name].insert_many(batch)
-            inserted += len(result.inserted_ids)
+            try:
+                batch = dataset.data[i : i + batch_size]
+                now = datetime.now(UTC)
+                for ds in batch:
+                    ds["created_at"] = now
+                    ds["updated_at"] = now
+                result = await self.db[dataset_collection_name].insert_many(batch)
+                inserted += len(result.inserted_ids)
+            except Exception as e:
+                logger.error(f"Error on batch buffer: {e}, {i}, {type(dataset)}")
         logger.info(f"Inserted 1 meta + {inserted} datasets in batches of {batch_size}")
         return inserted
         # endregion

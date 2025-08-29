@@ -63,14 +63,3 @@ class SearchCriteria:
     def __post_init__(self):
         if self.tags is None:
             self.tags = []
-
-
-# class QAResponse(BaseModel):
-if __name__ == "__main__":
-    resp = DatasetResponse(
-        score=0.95, metadata=DatasetMetadataWithContent(id="123", title="Demo dataset")
-    )
-
-    print("model_dump():", resp.model_dump())
-    print("json.dumps():", json.dumps(resp.model_dump(), indent=2, ensure_ascii=False))
-    print("pydantic .model_dump_json():", resp.model_dump_json(indent=2))

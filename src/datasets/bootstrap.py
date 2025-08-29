@@ -96,10 +96,10 @@ async def bootstrap_data():
 
     # Create tasks for each city
     tasks = [
-        download_chemnitz(),
-        download_berlin(),
+        # download_chemnitz(),
+        # download_berlin(),
         download_leipzig(),
-        download_dresden(),
+        # download_dresden(),
     ]
 
     # Run all tasks concurrently

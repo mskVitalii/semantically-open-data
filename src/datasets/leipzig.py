@@ -3,11 +3,8 @@ import io
 import json
 import logging
 import sys
-import os
-from typing import Dict, Optional
-from urllib.parse import urlparse, unquote
+from typing import Optional
 
-import aiofiles
 import pandas as pd
 
 from src.datasets.base_data_downloader import BaseDataDownloader
@@ -73,100 +70,90 @@ class Leipzig(BaseDataDownloader):
 
     # region LOGIC STEPS
 
-    @staticmethod
-    def get_file_extension(url: str, format_hint: str) -> str:
-        """Determine file extension from URL or format hint"""
-        format_extensions = {"csv": ".csv", "json": ".json", "geojson": ".geojson"}
-
-        if format_hint in format_extensions:
-            return format_extensions[format_hint]
-
-        parsed = urlparse(url)
-        path = unquote(parsed.path)
-        if "." in os.path.basename(path):
-            ext = os.path.splitext(path)[1].lower()
-            if ext in [".csv", ".json", ".geojson"]:
-                return ext
-
-        return ".data"
-
     # 7.
-    async def download_resource(
-        self, resource: Dict, safe_title: str
-    ) -> tuple[bool, list[dict]] | bool:
+    async def download_resource(self, resource: dict) -> (bool, list[dict] | None):
         """Download a single resource with retry logic"""
         try:
             url = resource.get("url")
-            resource_name = resource.get("name", resource.get("id", "unnamed"))
+            # resource_name = resource.get("name", resource.get("id", "unnamed"))
             resource_format = resource.get("format", "").lower()
-
-            # Update format-specific counters
-            self.logger.debug(
-                f"\t📄 Downloading: {resource_name} ({resource_format.upper()})"
-            )
 
             # Download with retry
             for attempt in range(self.max_retries):
                 try:
                     async with self.session.get(url) as response:
                         response.raise_for_status()
-                        dataset_format = self.get_file_extension(url, resource_format)
-                        if not self.is_file_system:
-                            if dataset_format == ".csv":
-                                content = await response.read()
-                                df = pd.read_csv(io.BytesIO(content))
-                                features = df.to_dict("records")
+                        if resource_format == "csv":
+                            content = await response.read()
+                            try:
+                                df = pd.read_csv(
+                                    io.BytesIO(content),
+                                    encoding="utf-8-sig",
+                                    sep=None,
+                                    engine="python",
+                                )
+                            except UnicodeDecodeError:
+                                df = pd.read_csv(
+                                    io.BytesIO(content),
+                                    encoding="ISO-8859-1",
+                                    sep=None,
+                                    engine="python",
+                                )
+                            features = df.to_dict("records")
+                            await self.update_stats("layers_downloaded")
+                            return True, features
+                        else:
+                            try:
+                                data = await response.json()
+                                if isinstance(data, dict):
+                                    features = data.get("features", [])
+                                elif isinstance(data, list):
+                                    features = data
+                                else:
+                                    self.logger.warning(f"Unknown type: {type(data)}")
+
                                 await self.update_stats("layers_downloaded")
                                 return True, features
-                            else:
-                                try:
-                                    data = await response.json()
-                                    features = data.get("features", [])
-                                    await self.update_stats("layers_downloaded")
-                                    return True, features
-                                except json.JSONDecodeError:
-                                    continue
+                            except json.JSONDecodeError:
+                                return False, None
 
-                        else:
-                            # Determine filename
-                            safe_name = sanitize_title(resource_name)
-                            filename = f"{safe_name}{dataset_format}"
-
-                            # region Avoid duplication
-                            counter = 1
-                            original_filename = filename
-                            dataset_dir = self.output_dir / safe_title
-                            while (dataset_dir / filename).exists():
-                                name, ext = os.path.splitext(original_filename)
-                                filename = f"{name}_{counter}{ext}"
-                                counter += 1
-                            # endregion
-
-                            file_path = dataset_dir / filename
-
-                            temp_path = file_path.with_suffix(file_path.suffix + ".tmp")
-
-                            # Download with streaming
-                            async with aiofiles.open(temp_path, "wb") as f:
-                                async for chunk in response.content.iter_chunked(
-                                    65536
-                                ):  # 64KB chunks
-                                    await f.write(chunk)
-
-                            # Verify file is not empty
-                            if temp_path.stat().st_size == 0:
-                                self.logger.warning(
-                                    f"Downloaded file is empty: {filename}"
-                                )
-                                temp_path.unlink()
-                                await self.mark_url_failed(url)
-                                return False
-
-                            # Atomic rename
-                            temp_path.rename(file_path)
-                            file_size = file_path.stat().st_size
-                            self.logger.debug(f"\t✅ {filename} ({file_size:,} bytes)")
-                        return True
+                        # else:
+                        #     # Determine filename
+                        #     safe_name = sanitize_title(resource_name)
+                        #     filename = f"{safe_name}.{resource_format}"
+                        #
+                        #     # region Avoid duplication
+                        #     counter = 1
+                        #     original_filename = filename
+                        #     dataset_dir = self.output_dir / safe_title
+                        #     while (dataset_dir / filename).exists():
+                        #         name, ext = os.path.splitext(original_filename)
+                        #         filename = f"{name}_{counter}{ext}"
+                        #         counter += 1
+                        #     # endregion
+                        #
+                        #     file_path = dataset_dir / filename
+                        #
+                        #     temp_path = file_path.with_suffix(file_path.suffix + ".tmp")
+                        #
+                        #     # Download with streaming
+                        #     async with aiofiles.open(temp_path, "wb") as f:
+                        #         async for chunk in response.content.iter_chunked(
+                        #             65536
+                        #         ):  # 64KB chunks
+                        #             await f.write(chunk)
+                        #
+                        #     # Verify file is not empty
+                        #     if temp_path.stat().st_size == 0:
+                        #         self.logger.warning(
+                        #             f"Downloaded file is empty: {filename}"
+                        #         )
+                        #         temp_path.unlink()
+                        #         await self.mark_url_failed(url)
+                        #         return False, None
+                        #
+                        #     # Atomic rename
+                        #     temp_path.rename(file_path)
 
                 except Exception as e:
                     if attempt < self.max_retries - 1:
@@ -175,36 +162,22 @@ class Leipzig(BaseDataDownloader):
                     else:
                         self.logger.error(f"\t❌ Error downloading {url}: {e}")
                         await self.mark_url_failed(url)
-                        return False
+                        return False, None
 
-            return False
+            return False, None
         except Exception as e:
             self.logger.error(f"\t❌ Unexpected error: {e}")
-            return False
+            return False, None
 
     # 6.
-    async def download_package(self, metadata: Dict) -> bool:
+    async def download_package(self, metadata: dict) -> bool:
         """Download all resources for a package"""
         try:
             package_data = metadata["package_data"]
             target_resources = metadata["target_resources"]
-
             package_title = package_data.get("title", metadata["package_id"])
             organization = package_data.get("organization", {}).get("title", "Unknown")
-
-            self.logger.debug(f"\n📦 Processing: {package_title}")
-            self.logger.debug(f"\t🏢 Organization: {organization}")
-            self.logger.debug(f"\t📊 Target resources: {len(target_resources)}")
-
-            # Skip if already processed
             safe_title = sanitize_title(package_title)
-            if self.is_file_system:
-                dataset_dir = self.output_dir / safe_title
-                metadata_file = dataset_dir / "metadata.json"
-                if metadata_file.exists():
-                    self.logger.debug(f"\tDataset already processed: {safe_title}")
-                    await self.update_stats("datasets_processed")
-                    return True
 
             # Prepare metadata
             package_meta = DatasetMetadataWithContent(
@@ -232,23 +205,20 @@ class Leipzig(BaseDataDownloader):
             ]
             sorted_resources = json_resources + other_resources
 
-            download_semaphore = asyncio.Semaphore(self.max_workers)
-
-            async def download_with_semaphore(_resource, _safe_title):
+            async def download_with_semaphore(_resource):
                 url = _resource.get("url")
                 if not url:
-                    return False
+                    return False, None
                 if await self.is_url_failed(url):
-                    return False
+                    return False, None
 
-                async with download_semaphore:
-                    return await self.download_resource(_resource, _safe_title)
+                return await self.download_resource(_resource)
 
             # Try to download a resource
             success = False
             data = []
             for resource in sorted_resources:
-                success, data = await download_with_semaphore(resource, safe_title)
+                success, data = await download_with_semaphore(resource)
                 if success:
                     await self.update_stats("files_downloaded")
                     break  # Stop after first successful download
@@ -282,7 +252,7 @@ class Leipzig(BaseDataDownloader):
             return False
 
     # 5.
-    async def get_package_details_by_api(self, package_id: str) -> Optional[Dict]:
+    async def get_package_details_by_api(self, package_id: str) -> Optional[dict]:
         """Get package details with caching and retry logic"""
         await asyncio.sleep(self.delay)  # Rate limiting
 
@@ -311,7 +281,7 @@ class Leipzig(BaseDataDownloader):
         return None
 
     # 4.
-    async def analyze_package(self, package_id: str) -> Optional[Dict]:
+    async def analyze_package(self, package_id: str) -> Optional[dict]:
         """Analyze a package and return metadata if it has target formats"""
         package_data = await self.get_package_details_by_api(package_id)
         if not package_data:
@@ -321,7 +291,11 @@ class Leipzig(BaseDataDownloader):
         target_resources = []
         for resource in package_data.get("resources", []):
             resource_format = resource.get("format", "").lower()
-            if resource_format in {"csv", "json", "geojson"}:
+            resource_mimetype = resource.get("mimetype", "")
+            if (
+                resource_format in {"csv", "json", "geojson"}
+                and resource_mimetype != "application/zip"
+            ):
                 target_resources.append(resource)
 
         if target_resources:
@@ -340,7 +314,6 @@ class Leipzig(BaseDataDownloader):
         """Get list of all package IDs with retry logic"""
         for attempt in range(self.max_retries):
             try:
-                self.logger.debug("🔍 Fetching package list...")
                 async with self.session.get(f"{self.api_url}/package_list") as response:
                     response.raise_for_status()
                     data = await response.json()
@@ -371,8 +344,6 @@ class Leipzig(BaseDataDownloader):
             if not all_packages:
                 return []
 
-            self.logger.debug("🔎 Analyzing packages for CSV/JSON/GeoJSON resources...")
-
             # Process packages in batches
             target_packages = []
 
@@ -393,12 +364,6 @@ class Leipzig(BaseDataDownloader):
                 for result in results:
                     if isinstance(result, dict) and result:
                         target_packages.append(result)
-
-                # Progress update
-                checked = min(i + self.batch_size, len(all_packages))
-                self.logger.debug(
-                    f"\tChecked {checked}/{len(all_packages)} packages..."
-                )
 
             datasets_found = await self.get_stat_value("datasets_found")
             self.logger.info(
@@ -422,16 +387,10 @@ class Leipzig(BaseDataDownloader):
             self.logger.error("❌ No packages found with CSV/JSON data")
             return
 
-        # Apply limit for testing
-        self.logger.debug(
-            f"\n🚀 Starting download of {len(target_packages)} packages..."
-        )
-        self.logger.debug("-" * 50)
-
         # Process packages in batches
         semaphore = asyncio.Semaphore(self.max_workers)
 
-        async def process_with_semaphore(metadata: Dict):
+        async def process_with_semaphore(metadata: dict):
             async with semaphore:
                 return await self.download_package(metadata)
 

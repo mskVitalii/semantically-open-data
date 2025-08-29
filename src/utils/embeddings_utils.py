@@ -9,7 +9,7 @@ from functools import partial
 
 import pandas as pd
 from pathlib import Path
-from typing import Dict, Any, Union
+from typing import Any, Union
 import gzip
 import bz2
 import lzma
@@ -55,7 +55,7 @@ def format_metadata_text(metadata: dict) -> str:
 # 2.1
 async def get_csv_example(
     file_path: Union[str, Path], row_index: int = 0
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Extract one example row from CSV file
 
@@ -132,7 +132,7 @@ async def get_csv_example(
 # 3.1
 async def get_json_example(
     file_path: Union[str, Path], object_index: int = 0
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Extract one example object from JSON file
 
@@ -327,7 +327,7 @@ async def _read_json_with_encodings(file_path: Path) -> Any:
 
 # 2|3 -> 4
 def json_to_searchable_string(
-    data: Dict[str, Any],
+    data: dict[str, Any],
     max_length: int = 500,
     max_depth: int = 2,
 ) -> str:
@@ -359,7 +359,7 @@ def json_to_searchable_string(
 
 # 5
 def _json_to_key_value_string(
-    data: Dict[str, Any], max_length: int, max_depth: int, current_depth: int = 0
+    data: dict[str, Any], max_length: int, max_depth: int, current_depth: int = 0
 ) -> str:
     """Convert JSON to 'key: value; key: value' format"""
     pairs = []

@@ -2,14 +2,15 @@ import asyncio
 import io
 import json
 import logging
+import random
 import sys
 from itertools import chain
 from pathlib import Path
 from typing import Dict, Optional, Set
 
 import aiohttp
-import aiofiles
 import pandas as pd
+from aiohttp import ClientTimeout
 from playwright.async_api import async_playwright, ViewportSize, Error
 
 from src.datasets.base_data_downloader import BaseDataDownloader
@@ -21,7 +22,6 @@ from src.infrastructure.logger import get_prefixed_logger
 from src.utils.datasets_utils import (
     safe_delete,
     sanitize_title,
-    skip_formats,
 )
 from src.utils.file import save_file_with_task
 
@@ -177,18 +177,18 @@ class Berlin(BaseDataDownloader):
     def get_file_extension(url: str, format_hint: str = None) -> str:
         """Optimized file extension detection"""
         # Quick lookup table
-        extension_map = {
-            ".csv": ".csv",
-            ".json": ".json",
-            ".xml": ".xml",
-            ".xlsx": ".xlsx",
-            ".xls": ".xls",
-            ".pdf": ".pdf",
-            ".txt": ".txt",
-        }
 
         url_lower = url.lower()
-        for ext in extension_map:
+        extensions = [
+            ".csv",
+            ".json",
+            ".xml",
+            ".xlsx",
+            ".xls",
+            ".pdf",
+            ".txt",
+        ]
+        for ext in extensions:
             if url_lower.endswith(ext):
                 return ext
 
@@ -220,124 +220,142 @@ class Berlin(BaseDataDownloader):
         format_hint = resource.get("format", "").lower()
 
         # Check for allowed formats
-        allowed_indicators = ["csv", "json", "geojson"]
         if any(
             indicator in format_hint or url.endswith(f".{indicator}")
-            for indicator in allowed_indicators
+            for indicator in ["csv", "json", "geojson"]
         ):
             return False
-
-        # Quick checks
-        skip_indicators = ["atom", "wms", "wfs", "wmts", "sparql", "api"]
-        if any(
-            indicator in url or indicator in format_hint
-            for indicator in skip_indicators
-        ):
-            return True
-
-        # Check against skip formats
-        if format_hint in skip_formats:
-            return True
 
         return True
 
     # 5.
-    async def download_file(
-        self, url: str, filepath: Path
-    ) -> tuple[bool, list[dict] | None]:
+    async def download_file_by_api(self, url: str) -> (bool, list[dict] | None):
         """Optimized file download with streaming"""
-        # Check if file already exists
-        if self.is_file_system and filepath.exists() and filepath.stat().st_size > 0:
-            self.logger.debug(f"File already exists: {filepath.name}")
-            return True, None
-
         try:
-            self.logger.debug(f"Downloading: {url}")
-            async with self.session.get(url) as response:
+            async with self.session.get(
+                url, timeout=ClientTimeout(total=600), ssl=False
+            ) as response:
                 response.raise_for_status()
                 content_type = response.headers.get("content-type", "").lower()
-                if not self.is_file_system:
-                    if "csv" in content_type:
-                        content = await response.read()
-                        df = pd.read_csv(io.BytesIO(content))
-                        features = df.to_dict("records")
+
+                if "html" in content_type:
+                    return False, None
+                elif (
+                    "csv" in content_type
+                    or "text/plain" in content_type
+                    or url.endswith(".csv")
+                ):
+                    content = await response.read()
+                    try:
+                        df = pd.read_csv(
+                            io.BytesIO(content),
+                            encoding="utf-8-sig",
+                            sep=None,
+                            engine="python",
+                        )
+                    except UnicodeDecodeError:
+                        df = pd.read_csv(
+                            io.BytesIO(content),
+                            encoding="ISO-8859-1",
+                            sep=None,
+                            engine="python",
+                        )
+                    features = df.to_dict("records")
+                    await self.update_stats("files_downloaded")
+                    return True, features
+                elif (
+                    "json" in content_type
+                    or "application/octet-stream" in content_type
+                    or url.endswith(".json")
+                ):
+                    raw = await response.read()
+                    try:
+                        data = json.loads(raw.decode("utf-8"))
+                        features = data.get("features", [])
                         await self.update_stats("files_downloaded")
                         return True, features
-                    else:
-                        try:
-                            data = await response.json()
-                            features = data.get("features", [])
-                            await self.update_stats("files_downloaded")
-                            return True, features
-                        except json.JSONDecodeError as e:
-                            self.logger.debug(
-                                f"JSON in memory download failed for {url}: {e}"
-                            )
-                            return False, None
-                else:
-                    # Create temporary file for atomic write
-                    temp_filepath = filepath.with_suffix(filepath.suffix + ".tmp")
-
-                    content_type = response.headers.get("content-type", "").lower()
-                    if response.status != 200:
+                    except Exception:
                         return False, None
-
-                    if "html" in content_type:
-                        # self.logger.info(f"HTML in content_type: {content_type}")
-                        # async with self.playwright_lock:
-                        #     self.playwright_domains.add(domain)
-                        # return await self.download_file_playwright(url, filepath)
-                        return False, None
-                    else:
-                        # Normal download with larger buffer
-                        async with aiofiles.open(temp_filepath, "wb") as f:
-                            async for chunk in response.content.iter_chunked(65536):
-                                await f.write(chunk)
-
-                    # Verify file is not empty
-                    if temp_filepath.stat().st_size == 0:
-                        self.logger.warning(f"Downloaded file is empty: {filepath}")
-                        temp_filepath.unlink()
-                        return False, None
-
-                    # Atomic rename
-                    temp_filepath.rename(filepath)
-
-                    self.logger.debug(
-                        f"Downloaded: {filepath.name} ({filepath.stat().st_size} bytes)"
-                    )
-                    await self.update_stats("files_downloaded")
-                    return True, None
+                # else:
+                #     # Create temporary file for atomic write
+                #     temp_filepath = filepath.with_suffix(filepath.suffix + ".tmp")
+                #
+                #     content_type = response.headers.get("content-type", "").lower()
+                #     if response.status != 200:
+                #         return False, None
+                #
+                #     if "html" in content_type:
+                #         # self.logger.info(f"HTML in content_type: {content_type}")
+                #         # async with self.playwright_lock:
+                #         #     self.playwright_domains.add(domain)
+                #         # return await self.download_file_playwright(url, filepath)
+                #         return False, None
+                #     else:
+                #         # Normal download with larger buffer
+                #         async with aiofiles.open(temp_filepath, "wb") as f:
+                #             async for chunk in response.content.iter_chunked(65536):
+                #                 await f.write(chunk)
+                #
+                #     # Verify file is not empty
+                #     if temp_filepath.stat().st_size == 0:
+                #         self.logger.warning(f"Downloaded file is empty: {filepath}")
+                #         temp_filepath.unlink()
+                #         return False, None
+                #
+                #     # Atomic rename
+                #     temp_filepath.rename(filepath)
+                #     await self.update_stats("files_downloaded")
+                #     return True, None
 
         except Exception as e:
-            self.logger.debug(f"Regular download failed for {url}: {e}")
+            if "Not Found" in str(e):
+                return False, None
+
+            self.logger.error(f"\t❌ Unexpected error: {e}. For {url}")
             return False, None
 
     # 4.
-    async def get_package_details_by_api(self, package_name: str) -> Optional[Dict]:
+    async def get_package_details_by_api(self, package_name: str) -> Optional[dict]:
         """Get package details with caching"""
         cached_service_info = await self.get_from_cache(package_name)
         if cached_service_info is not None:
             return cached_service_info
+        delay = 1
+        retries = 3
+        for attempt in range(retries):
+            try:
+                async with self.session.get(
+                    f"{self.api_url}/package_show",
+                    params={"id": package_name},
+                    timeout=ClientTimeout(total=600),
+                    ssl=False,
+                ) as response:
+                    response.raise_for_status()
+                    raw = bytearray()
+                    async for chunk in response.content.iter_chunked(4096 * 16):
+                        raw.extend(chunk)
+                    data = json.loads(raw)
 
-        try:
-            async with self.session.get(
-                f"{self.api_url}/package_show", params={"id": package_name}
-            ) as response:
-                response.raise_for_status()
-                data = await response.json()
+                    if data.get("success"):
+                        result = data.get("result")
+                        await self.add_to_cache(package_name, result)
+                        return result
 
-                if data.get("success"):
-                    result = data.get("result")
-                    await self.add_to_cache(package_name, result)
-                    return result
-                else:
                     self.logger.warning(f"Package not found or error: {package_name}")
                     return None
-
-        except aiohttp.ClientError as e:
-            self.logger.error(f"Error fetching package details for {package_name}: {e}")
-            return None
+            except (
+                aiohttp.ClientError,
+                aiohttp.http_exceptions.HttpProcessingError,
+            ) as e:
+                self.logger.error(
+                    f"Error fetching package details for {package_name}: {e}"
+                )
+                if attempt == retries - 1:
+                    raise
+                await asyncio.sleep(delay + random.random())
+                delay *= 2
+                return None
+        return None
 
     # 3.
     async def process_dataset(self, package_name: str) -> bool:
@@ -405,19 +423,18 @@ class Berlin(BaseDataDownloader):
             valid_resources.sort(key=lambda x: x[0])
 
             # Download resources concurrently (but limit to avoid overwhelming)
-            success_count = 0
             download_tasks = []
 
             for priority, i, resource in valid_resources:
                 url = resource.get("url")
-                resource_name = resource.get("name", f"resource_{i}")
-                resource_format = resource.get("format", "")
-                extension = self.get_file_extension(url, resource_format)
+                # resource_name = resource.get("name", f"resource_{i}")
+                # resource_format = resource.get("format", "")
+                # extension = self.get_file_extension(url, resource_format)
 
-                filename = sanitize_title(f"{resource_name}_{i}{extension}")
-                filepath = dataset_dir / filename
+                # filename = sanitize_title(f"{resource_name}_{i}{extension}")
+                # filepath = dataset_dir / filename
 
-                task = self.download_file(url, filepath)
+                task = self.download_file_by_api(url)
                 download_tasks.append(task)
 
             # Wait for downloads
@@ -425,9 +442,6 @@ class Berlin(BaseDataDownloader):
             success_count = sum(1 for r in results if r[0] is True)
 
             if success_count > 0:
-                self.logger.debug(f"Downloaded {success_count} files for: {title}")
-
-                # Save metadata
                 package_meta = DatasetMetadataWithContent(
                     id=meta_id,
                     title=title,

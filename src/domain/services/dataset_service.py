@@ -94,8 +94,8 @@ class DatasetService:
         """Bootstrap datasets - clear and reload all data"""
         try:
             # Clear MongoDB
-            deleted_count = await self.repository.delete_all()
-            logger.info(f"Deleted {deleted_count} datasets from MongoDB")
+            await self.repository.delete_all()
+            logger.warning("Deleted all MONGO collections")
 
             # Clear vector DB
             await self.vector_db.remove_collection()

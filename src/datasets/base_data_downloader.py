@@ -21,7 +21,7 @@ class BaseDataDownloader(ABC):
     def __init__(
         self,
         output_dir: str = "data",
-        max_workers: int = 64,
+        max_workers: int = 8,
         delay: float = 0.05,
         is_file_system: bool = True,
         is_embeddings: bool = False,

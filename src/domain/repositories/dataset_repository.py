@@ -152,11 +152,11 @@ class DatasetRepository:
             logger.error(f"Error deleting dataset {dataset_id}: {e}")
             return False
 
-    async def delete_all(self) -> int:
+    async def delete_all(self):
         """Delete all datasets (use with caution!)"""
-        result = await self.meta_collection.delete_many({})
-        logger.warning(f"Deleted {result.deleted_count} datasets")
-        return result.deleted_count
+        collections = await self.db.list_collection_names()
+        for name in collections:
+            await self.db.drop_collection(name)
 
     async def count(self, filter_dict: Optional[dict[str, Any]] = None) -> int:
         """Count datasets"""

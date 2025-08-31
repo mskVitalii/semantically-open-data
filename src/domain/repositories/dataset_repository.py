@@ -35,8 +35,9 @@ class DatasetRepository:
         # await self.meta_collection.create_index([("city", 1), ("organization", 1)])
         logger.info("Indexes created successfully")
 
+    @staticmethod
     async def insert_one(
-        self, dataset: dict[str, Any], collection: AsyncIOMotorCollection
+        dataset: dict[str, Any], collection: AsyncIOMotorCollection
     ) -> str:
         """Insert single dataset"""
         dataset["created_at"] = datetime.now(UTC)
@@ -45,8 +46,9 @@ class DatasetRepository:
         logger.debug(f"Inserted dataset with id: {result.inserted_id}")
         return str(result.inserted_id)
 
+    @staticmethod
     async def insert_many(
-        self, datasets: list[dict[str, Any]], collection: AsyncIOMotorCollection
+        datasets: list[dict[str, Any]], collection: AsyncIOMotorCollection
     ) -> list[str]:
         """Insert multiple datasets"""
         for dataset in datasets:
@@ -57,8 +59,9 @@ class DatasetRepository:
         logger.debug(f"Inserted {len(result.inserted_ids)} datasets")
         return [str(inserted_id) for inserted_id in result.inserted_ids]
 
+    @staticmethod
     async def find_by_id(
-        self, dataset_id: str, collection: AsyncIOMotorCollection
+        dataset_id: str, collection: AsyncIOMotorCollection
     ) -> Optional[dict[str, Any]]:
         """Find dataset by ID"""
         try:
@@ -71,8 +74,9 @@ class DatasetRepository:
             logger.error(f"Error finding dataset by id {dataset_id}: {e}")
             return None
 
+    @staticmethod
     async def find_by_external_id(
-        self, external_id: str, collection: AsyncIOMotorCollection
+        external_id: str, collection: AsyncIOMotorCollection
     ) -> Optional[dict[str, Any]]:
         """Find dataset by external ID (from original source)"""
         document = await collection.find_one({"external_id": external_id})
@@ -81,8 +85,8 @@ class DatasetRepository:
             document["_id"] = str(document["_id"])
         return document
 
+    @staticmethod
     async def find_all(
-        self,
         collection: AsyncIOMotorCollection,
         skip: int = 0,
         limit: int = 100,

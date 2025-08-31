@@ -109,9 +109,9 @@ class DatasetDBBuffer(AsyncBuffer[Dataset]):
                 try:
                     # Create semaphore to limit concurrent operations
                     # Adjust max_concurrent based on your system's capacity
-                    max_concurrent = min(
-                        10, len(data_to_store)
-                    )  # Max 10 parallel tasks
+                    # max_concurrent = min(
+                    #     10, len(data_to_store)
+                    # )  # Max 10 parallel tasks
                     # semaphore = asyncio.Semaphore(max_concurrent)
 
                     async def index_single_dataset(dataset: Dataset) -> int:
@@ -121,8 +121,10 @@ class DatasetDBBuffer(AsyncBuffer[Dataset]):
                                 dataset,
                                 self.buffer_size,
                             )
-                        except Exception as e:
-                            logger.error(f"Failed to index dataset, {e}", exc_info=True)
+                        except Exception as __e:
+                            logger.error(
+                                f"Failed to index dataset, {__e}", exc_info=True
+                            )
                             return 0
 
                     # Process all datasets concurrently with semaphore control

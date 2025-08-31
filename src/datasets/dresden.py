@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 from typing import List, Dict, Optional
 
-import aiofiles
 import pandas as pd
 from aiohttp import (
     ClientTimeout,
@@ -80,7 +79,7 @@ class Dresden(BaseDataDownloader):
     # 8.
     async def download_file(
         self, url: str, filename: str, dataset_dir: Path
-    ) -> tuple[bool, list[dict]] | bool:
+    ) -> (bool, list[dict] | None):
         """
         Download file with optimized async streaming
 
@@ -94,22 +93,15 @@ class Dresden(BaseDataDownloader):
         """
         filepath = dataset_dir / filename
 
-        # Check if file already exists
-        if self.is_file_system and filepath.exists() and filepath.stat().st_size > 0:
-            self.logger.debug(f"File already exists: {filepath}")
-            return True
-
         # Check if URL previously failed
         if await self.is_url_failed(url):
-            return False
+            return False, None
 
         for attempt in range(self.max_retries):
             try:
-                self.logger.debug(f"Downloading: {url}")
                 async with self.session.get(url) as response:
                     response.raise_for_status()
 
-                    # Check content type and length
                     content_type = response.headers.get("content-type", "").lower()
                     content_length = response.headers.get("content-length")
 
@@ -122,49 +114,58 @@ class Dresden(BaseDataDownloader):
                             f"Response appears to be an error page: {url}"
                         )
                         await self.mark_url_failed(url)
-                        return False
+                        return False, None
 
-                    if not self.is_file_system:
-                        if filepath.suffix == ".csv":
-                            content = await response.read()
-                            df = pd.read_csv(io.BytesIO(content))
-                            features = df.to_dict("records")
+                    if filepath.suffix == ".csv":
+                        content = await response.read()
+                        try:
+                            df = pd.read_csv(
+                                io.BytesIO(content),
+                                encoding="utf-8-sig",
+                                sep=None,
+                                engine="python",
+                            )
+                        except UnicodeDecodeError:
+                            df = pd.read_csv(
+                                io.BytesIO(content),
+                                encoding="ISO-8859-1",
+                                sep=None,
+                                engine="python",
+                            )
+                        features = df.to_dict("records")
+                        await self.update_stats("files_downloaded")
+                        return True, features
+                    else:
+                        try:
+                            data = await response.json()
+                            features = data.get("features", [])
                             await self.update_stats("files_downloaded")
                             return True, features
-                        else:
-                            try:
-                                data = await response.json()
-                                features = data.get("features", [])
-                                await self.update_stats("files_downloaded")
-                                return True, features
-                            except json.JSONDecodeError:
-                                continue
-                    else:
-                        # Create temporary file for atomic write
-                        temp_path = filepath.with_suffix(filepath.suffix + ".tmp")
-
-                        # Download with streaming
-                        async with aiofiles.open(temp_path, "wb") as f:
-                            async for chunk in response.content.iter_chunked(
-                                65536
-                            ):  # 64KB chunks
-                                await f.write(chunk)
-
-                        # Verify file is not empty
-                        if temp_path.stat().st_size == 0:
-                            self.logger.warning(f"Downloaded file is empty: {filepath}")
-                            temp_path.unlink()
-                            await self.mark_url_failed(url)
-                            return False
-
-                        # Atomic rename
-                        temp_path.rename(filepath)
-
-                        self.logger.debug(
-                            f"File saved: {filepath} ({filepath.stat().st_size} bytes)"
-                        )
-                        await self.update_stats("files_downloaded")
-                        return True
+                        except json.JSONDecodeError:
+                            return False, None
+                    # else:
+                    #     # Create temporary file for atomic write
+                    #     temp_path = filepath.with_suffix(filepath.suffix + ".tmp")
+                    #
+                    #     # Download with streaming
+                    #     async with aiofiles.open(temp_path, "wb") as f:
+                    #         async for chunk in response.content.iter_chunked(
+                    #             65536
+                    #         ):  # 64KB chunks
+                    #             await f.write(chunk)
+                    #
+                    #     # Verify file is not empty
+                    #     if temp_path.stat().st_size == 0:
+                    #         self.logger.warning(f"Downloaded file is empty: {filepath}")
+                    #         temp_path.unlink()
+                    #         await self.mark_url_failed(url)
+                    #         return False
+                    #
+                    #     # Atomic rename
+                    #     temp_path.rename(filepath)
+                    #
+                    #     await self.update_stats("files_downloaded")
+                    #     return True
 
             except Exception as e:
                 if attempt < self.max_retries - 1:
@@ -174,11 +175,12 @@ class Dresden(BaseDataDownloader):
                     self.logger.error(f"Error downloading {url}: {e}")
                     await self.update_stats("errors")
                     await self.mark_url_failed(url)
-                    return False
-        return False
+                    return False, None
+        return False, None
 
     # 7.
-    def extract_from_distributions(self, metadata: Dict) -> List[Dict]:
+    @staticmethod
+    def extract_from_distributions(metadata: Dict) -> List[Dict]:
         """
         Fallback method to extract download URLs from distribution metadata
 
@@ -193,20 +195,14 @@ class Dresden(BaseDataDownloader):
         if not metadata:
             return downloads
 
-        self.logger.debug(f"Extracting URLs from metadata with {len(metadata)} entries")
-
         # Search for distributions in metadata
         for subject, predicates in metadata.items():
-            self.logger.debug(f"Checking subject: {subject}")
-
             # Look for dcat:distribution
             distributions = predicates.get("http://www.w3.org/ns/dcat#distribution", [])
-            self.logger.debug(f"Found distributions: {len(distributions)}")
 
             for dist in distributions:
                 if dist.get("type") == "uri":
                     dist_uri = dist.get("value")
-                    self.logger.debug(f"Processing distribution: {dist_uri}")
 
                     # Get distribution information
                     dist_info = metadata.get(dist_uri, {})
@@ -223,7 +219,6 @@ class Dresden(BaseDataDownloader):
 
                     if access_urls and access_urls[0].get("type") == "uri":
                         download_url = access_urls[0].get("value")
-                        self.logger.debug(f"Found download URL: {download_url}")
 
                     # Look for file format
                     format_info = dist_info.get("http://purl.org/dc/terms/format", [])
@@ -266,7 +261,6 @@ class Dresden(BaseDataDownloader):
                                 "distribution_uri": dist_uri,
                             }
                         )
-                        self.logger.debug(f"Added download file: {file_title}")
 
         return downloads
 
@@ -276,7 +270,6 @@ class Dresden(BaseDataDownloader):
     ) -> Optional[Dict]:
         """Check if a URL is available and return download info"""
         try:
-            self.logger.debug(f"Checking availability: {url}")
             async with self.session.head(
                 url, timeout=ClientTimeout(total=10)
             ) as response:
@@ -349,12 +342,8 @@ class Dresden(BaseDataDownloader):
 
         # Fallback: try to extract from distribution metadata if no direct files found
         if not downloads:
-            self.logger.debug(
-                "No direct content files found, trying distribution metadata"
-            )
             downloads = self.extract_from_distributions(dataset_metadata)
 
-        self.logger.debug(f"Found {len(downloads)} files for download")
         return downloads
 
     # 4.
@@ -368,19 +357,6 @@ class Dresden(BaseDataDownloader):
         if not context_id or not entry_id:
             self.logger.warning("Missing contextId or entryId")
             return False
-
-        # Check if already processed
-        safe_key = f"{context_id}_{entry_id}"
-        if self.is_file_system:
-            existing_dirs = [
-                d
-                for d in self.output_dir.iterdir()
-                if d.is_dir() and d.name.startswith(safe_key)
-            ]
-            if existing_dirs:
-                self.logger.debug(f"Dataset already processed: {safe_key}")
-                await self.update_stats("datasets_processed")
-                return True
 
         # Use metadata from dataset_info
         dataset_metadata = dataset_info.get("metadata", {})
@@ -437,11 +413,8 @@ class Dresden(BaseDataDownloader):
             )
             return False
 
-        # Directory creation
         safe_title = sanitize_title(title)
         dataset_dir = self.output_dir / f"{context_id}_{entry_id}_{safe_title}"
-        if self.is_file_system:
-            dataset_dir.mkdir(exist_ok=True)
 
         # Prepare metadata
         package_meta = DatasetMetadataWithContent(
@@ -455,13 +428,9 @@ class Dresden(BaseDataDownloader):
             country="Germany",
         )
 
-        self.logger.debug(f"Processing dataset: {title}")
-        self.logger.debug(f"Dataset URI: {dataset_uri}")
-
         # Extract download links
         downloads = await self.extract_download_urls(dataset_metadata, dataset_uri)
         if not downloads:
-            self.logger.debug(f"No download files found for dataset: {title}")
             await self.update_stats("datasets_processed")
             await self.update_stats("failed_datasets")
             return False
@@ -489,19 +458,15 @@ class Dresden(BaseDataDownloader):
         for download_info in sorted_downloads:
             success, data = await download_with_semaphore(download_info)
             if success:
-                self.logger.debug(
-                    f"Successfully downloaded {download_info.get('extension')} file"
-                )
                 break  # Stop after first successful download
 
         if success:
             # Save metadata
             if self.is_file_system:
+                dataset_dir.mkdir(exist_ok=True)
                 metadata_file = dataset_dir / "metadata.json"
                 content = package_meta.to_json()
                 save_file_with_task(metadata_file, content)
-
-            # package_meta.fields = await extract_data_content(dataset_dir)
 
             if self.is_embeddings and self.vector_db_buffer:
                 await self.vector_db_buffer.add(package_meta)
@@ -518,12 +483,12 @@ class Dresden(BaseDataDownloader):
         return success
 
     # 3.
-    async def search_datasets_by_api(self, limit: int = 100, offset: int = 0) -> Dict:
+    async def search_datasets_by_api(self, limit: int = 150, offset: int = 0) -> Dict:
         """
         Search Dresden datasets via API with retry logic
 
         Args:
-            limit: Number of results per request (max 100)
+            limit: Number of results per request
             offset: Offset for pagination
 
         Returns:
@@ -539,7 +504,6 @@ class Dresden(BaseDataDownloader):
 
         for attempt in range(self.max_retries):
             try:
-                self.logger.debug(f"Searching datasets: offset={offset}, limit={limit}")
                 async with self.session.get(
                     self.search_endpoint, params=params
                 ) as response:
@@ -559,7 +523,7 @@ class Dresden(BaseDataDownloader):
         """Collect all datasets from the API"""
         all_datasets = []
         offset = 0
-        limit = 100
+        limit = 150
 
         while True:
             # Search for datasets
@@ -575,20 +539,15 @@ class Dresden(BaseDataDownloader):
             total_results = search_result.get("results", 0)
 
             if not children:
-                self.logger.debug("No more datasets found")
                 break
 
             if offset == 0:
                 await self.update_stats("datasets_found", total_results, "set")
-                self.logger.debug(f"Total datasets found: {total_results}")
 
             all_datasets.extend(children)
 
             # Move to next page
             offset += limit
-            self.logger.debug(
-                f"Collected datasets: {len(all_datasets)} of {total_results}"
-            )
 
             # If we got fewer results than requested, this is the last page
             if len(children) < limit:
@@ -607,10 +566,6 @@ class Dresden(BaseDataDownloader):
         if not all_datasets:
             self.logger.error("No datasets found")
             return
-
-        self.logger.debug(
-            f"Starting download of {len(all_datasets)} datasets with {self.max_workers} workers"
-        )
 
         progress_task = asyncio.create_task(self.progress_reporter())
 

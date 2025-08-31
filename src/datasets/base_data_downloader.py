@@ -96,9 +96,9 @@ class BaseDataDownloader(ABC):
 
         # Optimized timeout settings
         timeout = ClientTimeout(
-            total=60,  # Total timeout
-            connect=10,  # Connection timeout
-            sock_read=30,  # Socket read timeout
+            total=120,  # Total timeout
+            connect=30,  # Connection timeout
+            sock_read=60,  # Socket read timeout
         )
 
         self.session = aiohttp.ClientSession(

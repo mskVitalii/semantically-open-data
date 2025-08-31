@@ -71,7 +71,9 @@ class Leipzig(BaseDataDownloader):
     # region LOGIC STEPS
 
     # 7.
-    async def download_resource(self, resource: dict) -> (bool, list[dict] | None):
+    async def download_resource_by_api(
+        self, resource: dict
+    ) -> (bool, list[dict] | None):
         """Download a single resource with retry logic"""
         try:
             url = resource.get("url")
@@ -93,12 +95,20 @@ class Leipzig(BaseDataDownloader):
                                     engine="python",
                                 )
                             except UnicodeDecodeError:
-                                df = pd.read_csv(
-                                    io.BytesIO(content),
-                                    encoding="ISO-8859-1",
-                                    sep=None,
-                                    engine="python",
-                                )
+                                try:
+                                    df = pd.read_csv(
+                                        io.BytesIO(content),
+                                        encoding="utf-16",
+                                        sep=None,
+                                        engine="python",
+                                    )
+                                except UnicodeDecodeError:
+                                    df = pd.read_csv(
+                                        io.BytesIO(content),
+                                        encoding="ISO-8859-1",
+                                        sep=None,
+                                        engine="python",
+                                    )
                             features = df.to_dict("records")
                             await self.update_stats("layers_downloaded")
                             return True, features
@@ -212,7 +222,7 @@ class Leipzig(BaseDataDownloader):
                 if await self.is_url_failed(url):
                     return False, None
 
-                return await self.download_resource(_resource)
+                return await self.download_resource_by_api(_resource)
 
             # Try to download a resource
             success = False

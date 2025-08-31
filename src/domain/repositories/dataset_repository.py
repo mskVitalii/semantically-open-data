@@ -247,7 +247,9 @@ class DatasetRepository:
                 result = await self.db[dataset_collection_name].insert_many(batch)
                 inserted += len(result.inserted_ids)
             except Exception as e:
-                logger.error(f"Error on batch buffer: {e}, {i}, {type(dataset)}")
+                logger.error(
+                    f"Error on batch buffer: {e}, {i}, {type(dataset)}, {dataset_collection_name}"
+                )
         logger.info(f"Inserted 1 meta + {inserted} datasets in batches of {batch_size}")
         return inserted
         # endregion

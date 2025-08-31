@@ -82,12 +82,12 @@ class Chemnitz(BaseDataDownloader):
 
     # region LOGIC STEPS
     # 6.
-    async def download_layer_data(
+    async def download_layer_data_by_api(
         self,
         service_url: str,
         layer_id: int,
         layer_name: str,
-    ) -> tuple[bool, list[dict]] | bool:
+    ) -> (bool, list[dict] | None):
         """Download data for a single layer with optimized retry logic"""
         formats_to_try = [
             ("geojson", "json"),
@@ -108,42 +108,32 @@ class Chemnitz(BaseDataDownloader):
                 try:
                     async with self.session.get(query_url, params=params) as response:
                         if response.status == 200:
-                            if self.is_file_system:
-                                safe_title = sanitize_title(layer_name)
-                                dataset_dir = self.output_dir / safe_title
-                                dataset_dir.mkdir(exist_ok=True)
-
                             if format_name == "geojson" or format_name == "json":
                                 try:
                                     data = await response.json()
                                     features = data.get("features", [])
-                                    if self.is_file_system:
-                                        file_name = f"{layer_name}.{file_ext}"
-                                        file_path = dataset_dir / file_name
-                                        content = json.dumps(
-                                            features, ensure_ascii=False, indent=2
-                                        )
-                                        save_file_with_task(file_path, content)
-                                        self.logger.debug(f"\t\t✓ Saved as {file_name}")
-
                                     await self.update_stats("layers_downloaded")
                                     return True, features
 
                                 except json.JSONDecodeError:
-                                    if self.is_file_system & file_path.exists():
-                                        file_path.unlink()
-                                    continue
+                                    return False, None
                             else:
                                 content = await response.read()
-                                if self.is_file_system:
-                                    file_name = f"{layer_name}.{file_ext}"
-                                    file_path = dataset_dir / file_name
-                                    save_file_with_task(file_path, content, binary=True)
-                                    self.logger.debug(f"✓ Saved as {file_name}")
-
-                                df = pd.read_csv(io.BytesIO(content))
+                                try:
+                                    df = pd.read_csv(
+                                        io.BytesIO(content),
+                                        encoding="utf-8-sig",
+                                        sep=None,
+                                        engine="python",
+                                    )
+                                except UnicodeDecodeError:
+                                    df = pd.read_csv(
+                                        io.BytesIO(content),
+                                        encoding="ISO-8859-1",
+                                        sep=None,
+                                        engine="python",
+                                    )
                                 features = df.to_dict("records")
-
                                 await self.update_stats("layers_downloaded")
                                 return True, features
 
@@ -155,13 +145,13 @@ class Chemnitz(BaseDataDownloader):
                         self.logger.error(
                             f"Error downloading layer {layer_name} with format {format_name}: {e}"
                         )
-                        continue
+                        return False, None
 
         self.logger.error(f"⚠ Couldn't download layer {layer_name}")
-        return False
+        return False, None
 
     # 5.
-    async def get_service_info(self, service_url: str) -> Optional[dict]:
+    async def get_service_info_by_api(self, service_url: str) -> Optional[dict]:
         """Get service info with caching and retry logic"""
         # cached_service_info = await self.get_from_cache(service_url)
         # if cached_service_info is not None:
@@ -176,7 +166,6 @@ class Chemnitz(BaseDataDownloader):
                     response.raise_for_status()
                     result = await response.json()
 
-                # await self.add_to_cache(service_url, result)
                 return result
 
             except Exception as e:
@@ -199,23 +188,11 @@ class Chemnitz(BaseDataDownloader):
         description: str = "",
     ) -> bool:
         """Download all data from a feature service with optimized concurrency"""
-        await asyncio.sleep(self.delay)  # Minimal delay to respect server
-
         try:
             # Get service info
-            service_info = await self.get_service_info(service_url)
+            service_info = await self.get_service_info_by_api(service_url)
             if not service_info:
                 return False
-
-            # Prepare folder
-            safe_title = sanitize_title(title)
-            if self.is_file_system:
-                dataset_dir = self.output_dir / safe_title
-                metadata_file = dataset_dir / "metadata.json"
-                if metadata_file.exists():
-                    self.logger.debug(f"\tDataset already processed: {title}")
-                    await self.update_stats("datasets_processed")
-                    return True
 
             # Prepare metadata
             package_meta = DatasetMetadataWithContent(
@@ -233,13 +210,8 @@ class Chemnitz(BaseDataDownloader):
             all_features = layers + tables
 
             if not all_features:
-                self.logger.debug(f"\tNo layers to download in {title}")
                 await self.update_stats("datasets_processed")
                 return True
-
-            self.logger.debug(
-                f"\tProcessing dataset: {title} ({len(all_features)} layers)"
-            )
 
             # Download layers concurrently with limited concurrency
             layer_semaphore = asyncio.Semaphore(self.max_workers)
@@ -248,7 +220,7 @@ class Chemnitz(BaseDataDownloader):
                 async with layer_semaphore:
                     layer_id = feature.get("id", 0)
                     layer_name = feature.get("name", f"layer_{layer_id}")
-                    return await self.download_layer_data(
+                    return await self.download_layer_data_by_api(
                         service_url, layer_id, layer_name
                     )
 
@@ -267,10 +239,8 @@ class Chemnitz(BaseDataDownloader):
                 and len(result) == 2
                 and result[0] is True
             )
+            safe_title = sanitize_title(title)
             if success_count > 0:
-                self.logger.debug(
-                    f"\tDownloaded {success_count}/{len(all_features)} layers for: {title}"
-                )
                 await self.update_stats("files_downloaded")
 
                 if self.is_embeddings and self.vector_db_buffer:
@@ -308,14 +278,10 @@ class Chemnitz(BaseDataDownloader):
         dataset_type = metadata["type"]
         description = metadata.get("description", "")
 
-        self.logger.debug(f"Processing: {title}")
-        self.logger.debug(f"\tURL: {url}")
-
         try:
             if "Feature Service" == dataset_type:
                 return await self.download_feature_service_data(url, title, description)
             else:
-                self.logger.debug(f"⚠ Not a Feature Service - {title}: {dataset_type}")
                 return False
 
         except Exception as e:

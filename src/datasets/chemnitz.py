@@ -13,10 +13,10 @@ import pandas as pd
 
 from src.datasets.base_data_downloader import BaseDataDownloader
 from src.datasets.datasets_metadata import (
-    DatasetMetadataWithContent,
+    DatasetMetadataWithFields,
     Dataset,
 )
-from src.utils.datasets_utils import sanitize_title, safe_delete
+from src.utils.datasets_utils import sanitize_title, safe_delete, extract_fields
 from src.infrastructure.logger import get_prefixed_logger
 from src.utils.file import save_file_with_task
 
@@ -195,7 +195,7 @@ class Chemnitz(BaseDataDownloader):
                 return False
 
             # Prepare metadata
-            package_meta = DatasetMetadataWithContent(
+            package_meta = DatasetMetadataWithFields(
                 id=service_info.get("serviceItemId"),
                 title=title,
                 description=description,
@@ -241,13 +241,15 @@ class Chemnitz(BaseDataDownloader):
             )
             safe_title = sanitize_title(title)
             if success_count > 0:
+                data = list(chain.from_iterable(res[1] for res in results))
+                package_meta.fields = extract_fields(data)
+
                 await self.update_stats("files_downloaded")
 
                 if self.is_embeddings and self.vector_db_buffer:
                     await self.vector_db_buffer.add(package_meta)
 
                 if self.is_store and self.dataset_db_buffer:
-                    data = list(chain.from_iterable(res[1] for res in results))
                     dataset = Dataset(metadata=package_meta, data=data)
                     await self.dataset_db_buffer.add(dataset)
 
@@ -265,7 +267,7 @@ class Chemnitz(BaseDataDownloader):
             return True
 
         except Exception as e:
-            self.logger.error(f"\tError processing dataset {title}: {e}")
+            self.logger.error(f"\tError processing dataset {title}: {e}", exc_info=True)
             await self.update_stats("failed_datasets", title)
             await self.update_stats("errors")
             return False

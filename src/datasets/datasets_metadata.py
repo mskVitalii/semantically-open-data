@@ -1,7 +1,8 @@
 import json
-from dataclasses import dataclass, asdict
+from abc import ABC
+from dataclasses import dataclass, asdict, field
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Any, Optional
 
 from src.utils.embeddings_utils import format_metadata_text
 
@@ -42,7 +43,7 @@ class DatasetMetadata:
 
         # return f"{self.title}\n{self.description}" if self.description else self.title
 
-    def to_payload(self) -> Dict[str, Any]:
+    def to_payload(self) -> dict[str, Any]:
         """Convert to Qdrant payload"""
         return {
             "id": self.id,
@@ -60,7 +61,7 @@ class DatasetMetadata:
             "author": self.author,
         }
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary (for JSON serialization)"""
         return asdict(self)
 
@@ -70,10 +71,56 @@ class DatasetMetadata:
 
 
 @dataclass
-class DatasetMetadataWithContent(DatasetMetadata):
+class Field(ABC):
+    type: str
+    name: str
+    unique_count: int
+    null_count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def to_json(self) -> str:
+        """Convert to JSON string"""
+        return json.dumps(
+            self.to_dict(),
+            indent=2,
+            ensure_ascii=False,
+            cls=DatasetJSONEncoder,
+        )
+
+
+@dataclass
+class FieldNumeric(Field):
+    type: str = field(default="Numeric", init=False)
+    mean: float
+    std: float
+    quantile_0_min: float
+    quantile_25: float
+    quantile_50_median: float
+    quantile_75: float
+    quantile_100_max: float
+    distribution: str
+
+
+@dataclass
+class FieldString(Field):
+    type: str = field(default="String", init=False)
+
+
+@dataclass
+class FieldDate(Field):
+    type: str = field(default="Date", init=False)
+    min: datetime
+    max: datetime
+    mean: datetime
+
+
+@dataclass
+class DatasetMetadataWithFields(DatasetMetadata):
     """Dataset metadata with additional content field"""
 
-    fields: Optional[str] = None
+    fields: Optional[dict[str, Field]] = None
 
     def to_searchable_text(self) -> str:
         """Combine title, description, and content for embedding"""
@@ -81,13 +128,13 @@ class DatasetMetadataWithContent(DatasetMetadata):
 
         # If you want to include content in the searchable text
         if self.fields:
-            return f"{base_text}\n{self.fields}"
+            return f"{base_text}\n{','.join(self.fields.keys())}"
         return base_text
 
-    def to_payload(self) -> Dict[str, Any]:
+    def to_payload(self) -> dict[str, Any]:
         """Convert to Qdrant payload including content"""
         payload = super().to_payload()
-        payload["fields"] = self.fields
+        payload["fields"] = {f: self.fields[f].to_json() for f in self.fields}
         return payload
 
     def to_json(self) -> str:
@@ -104,7 +151,7 @@ class DatasetJSONEncoder(json.JSONEncoder):
     """Custom JSON encoder that handles DatasetMetadata objects and datetime"""
 
     def default(self, obj):
-        if isinstance(obj, (DatasetMetadata, DatasetMetadataWithContent)):
+        if isinstance(obj, (DatasetMetadata, DatasetMetadataWithFields)):
             return obj.to_dict()
         elif isinstance(obj, datetime):
             return obj.isoformat()

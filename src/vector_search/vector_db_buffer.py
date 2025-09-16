@@ -1,6 +1,6 @@
 import asyncio
 
-from src.datasets.datasets_metadata import DatasetMetadataWithContent
+from src.datasets.datasets_metadata import DatasetMetadataWithFields
 from src.infrastructure.logger import get_prefixed_logger
 from src.utils.buffer_abc import AsyncBuffer
 from src.vector_search.vector_db import VectorDB
@@ -8,7 +8,7 @@ from src.vector_search.vector_db import VectorDB
 logger = get_prefixed_logger(__name__, "VECTOR_BUFFER")
 
 
-class VectorDBBuffer(AsyncBuffer[DatasetMetadataWithContent]):
+class VectorDBBuffer(AsyncBuffer[DatasetMetadataWithFields]):
     """Buffer for batching dataset indexing operations"""
 
     def __init__(self, vector_db: VectorDB, buffer_size: int = 150):
@@ -21,13 +21,13 @@ class VectorDBBuffer(AsyncBuffer[DatasetMetadataWithContent]):
         """
         self.vector_db = vector_db
         self.buffer_size = buffer_size
-        self._buffer: list[DatasetMetadataWithContent] = []
+        self._buffer: list[DatasetMetadataWithFields] = []
         self._lock = asyncio.Lock()  # Async lock for thread safety
         self._total_indexed = 0
 
     # region Buffer logic
 
-    async def add(self, dataset: DatasetMetadataWithContent) -> None:
+    async def add(self, dataset: DatasetMetadataWithFields) -> None:
         """
         Add a single dataset to the buffer
 

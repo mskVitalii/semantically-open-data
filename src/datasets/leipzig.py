@@ -9,11 +9,11 @@ import pandas as pd
 
 from src.datasets.base_data_downloader import BaseDataDownloader
 from src.datasets.datasets_metadata import (
-    DatasetMetadataWithContent,
+    DatasetMetadataWithFields,
     Dataset,
 )
 from src.infrastructure.logger import get_prefixed_logger
-from src.utils.datasets_utils import sanitize_title, safe_delete
+from src.utils.datasets_utils import sanitize_title, safe_delete, extract_fields
 from src.utils.file import save_file_with_task
 
 
@@ -190,7 +190,7 @@ class Leipzig(BaseDataDownloader):
             safe_title = sanitize_title(package_title)
 
             # Prepare metadata
-            package_meta = DatasetMetadataWithContent(
+            package_meta = DatasetMetadataWithFields(
                 id=package_data.get("id"),
                 title=package_title,
                 organization=organization,
@@ -236,6 +236,8 @@ class Leipzig(BaseDataDownloader):
                     await self.update_stats("errors")
 
             if success:
+                package_meta.fields = extract_fields(data)
+
                 # Save metadata
                 if self.is_file_system:
                     dataset_dir = self.output_dir / safe_title

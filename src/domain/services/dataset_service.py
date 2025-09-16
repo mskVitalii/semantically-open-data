@@ -3,7 +3,7 @@ from fastapi import Depends
 from numpy import ndarray
 
 from src.datasets.bootstrap import bootstrap_data
-from src.datasets.datasets_metadata import DatasetMetadataWithContent
+from src.datasets.datasets_metadata import DatasetMetadataWithFields
 from src.domain.repositories.dataset_repository import (
     DatasetRepository,
     get_dataset_repository,
@@ -47,7 +47,7 @@ class DatasetService:
         for dataset in datasets:
             metadatas.append(
                 DatasetResponse(
-                    metadata=DatasetMetadataWithContent(**dataset.payload),
+                    metadata=DatasetMetadataWithFields(**dataset.payload),
                     score=dataset.score,
                 ),
             )
@@ -82,7 +82,7 @@ class DatasetService:
         logger.info(datasets)
         return [
             DatasetResponse(
-                metadata=DatasetMetadataWithContent(
+                metadata=DatasetMetadataWithFields(
                     **{k: v for k, v in dataset.payload.items() if k != "content"}
                 ),
                 score=dataset.score,

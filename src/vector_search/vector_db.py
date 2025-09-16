@@ -15,7 +15,7 @@ from qdrant_client.models import (
     PayloadSchemaType,
 )
 
-from src.datasets.datasets_metadata import DatasetMetadataWithContent
+from src.datasets.datasets_metadata import DatasetMetadataWithFields
 from src.infrastructure.config import (
     USE_GRPC,
     QDRANT_GRPC_PORT,
@@ -99,7 +99,7 @@ class VectorDB:
             logger.info(f"Collection {QDRANT_COLLECTION_NAME} already exists")
 
     async def index_datasets(
-        self, datasets: List[DatasetMetadataWithContent], batch_size: int = 100
+        self, datasets: List[DatasetMetadataWithFields], batch_size: int = 100
     ):
         """Index multiple datasets with batching for better performance"""
         logger.info(f"Indexing {len(datasets)} datasets...")

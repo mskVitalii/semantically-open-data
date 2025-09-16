@@ -15,13 +15,14 @@ from playwright.async_api import async_playwright, ViewportSize, Error
 
 from src.datasets.base_data_downloader import BaseDataDownloader
 from src.datasets.datasets_metadata import (
-    DatasetMetadataWithContent,
+    DatasetMetadataWithFields,
     Dataset,
 )
 from src.infrastructure.logger import get_prefixed_logger
 from src.utils.datasets_utils import (
     safe_delete,
     sanitize_title,
+    extract_fields,
 )
 from src.utils.file import save_file_with_task
 
@@ -442,7 +443,7 @@ class Berlin(BaseDataDownloader):
             success_count = sum(1 for r in results if r[0] is True)
 
             if success_count > 0:
-                package_meta = DatasetMetadataWithContent(
+                package_meta = DatasetMetadataWithFields(
                     id=meta_id,
                     title=title,
                     groups=[group.get("title") for group in package.get("groups", [])],
@@ -454,6 +455,9 @@ class Berlin(BaseDataDownloader):
                     country="Germany",
                 )
 
+                data = list(chain.from_iterable(res[1] for res in results))
+                package_meta.fields = extract_fields(data)
+
                 if self.is_file_system:
                     save_file_with_task(metadata_file, package_meta.to_json())
 
@@ -461,7 +465,6 @@ class Berlin(BaseDataDownloader):
                     await self.vector_db_buffer.add(package_meta)
 
                 if self.is_store and self.dataset_db_buffer:
-                    data = list(chain.from_iterable(res[1] for res in results))
                     dataset = Dataset(metadata=package_meta, data=data)
                     await self.dataset_db_buffer.add(dataset)
             else:

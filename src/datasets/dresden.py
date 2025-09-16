@@ -16,11 +16,11 @@ from aiohttp import (
 
 from src.datasets.base_data_downloader import BaseDataDownloader
 from src.datasets.datasets_metadata import (
-    DatasetMetadataWithContent,
+    DatasetMetadataWithFields,
     Dataset,
 )
 from src.infrastructure.logger import get_prefixed_logger
-from src.utils.datasets_utils import sanitize_title, safe_delete
+from src.utils.datasets_utils import sanitize_title, safe_delete, extract_fields
 from src.utils.file import save_file_with_task
 
 
@@ -417,7 +417,7 @@ class Dresden(BaseDataDownloader):
         dataset_dir = self.output_dir / f"{context_id}_{entry_id}_{safe_title}"
 
         # Prepare metadata
-        package_meta = DatasetMetadataWithContent(
+        package_meta = DatasetMetadataWithFields(
             id=f"{context_id}/{entry_id}",
             url=dataset_uri,
             title=title,
@@ -461,6 +461,8 @@ class Dresden(BaseDataDownloader):
                 break  # Stop after first successful download
 
         if success:
+            package_meta.fields = extract_fields(data)
+
             # Save metadata
             if self.is_file_system:
                 dataset_dir.mkdir(exist_ok=True)

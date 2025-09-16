@@ -5,7 +5,7 @@ from typing import Optional, List
 from dataclasses import dataclass
 
 from src.datasets.datasets_metadata import (
-    DatasetMetadataWithContent,
+    DatasetMetadataWithFields,
     DatasetJSONEncoder,
 )
 
@@ -23,13 +23,13 @@ class DatasetResponse(BaseModel):
     """DTO for dataset information response"""
 
     score: float
-    metadata: DatasetMetadataWithContent
+    metadata: DatasetMetadataWithFields
 
     model_config = {"from_attributes": True}
 
     def to_json(self) -> str:
         data = self.model_dump()
-        if isinstance(self.metadata, DatasetMetadataWithContent):
+        if isinstance(self.metadata, DatasetMetadataWithFields):
             data["metadata"] = self.metadata.to_json()
         return json.dumps(
             data,

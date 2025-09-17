@@ -1,52 +1,42 @@
 [
   {
     "question": "What is the typical species of grass found in Germany?",
-    "reason": "Different grass species have varying colors.",
-    "id": 0
+    "reason": "Different grass species have different colors."
   },
   {
     "question": "How does sunlight affect the color of grass?",
-    "reason": "Sunlight influences chlorophyll production and thus the green color.",
-    "id": 1
+    "reason": "Light influences the photosynthetic pigments and thus the apparent color."
   },
   {
-    "question": "What is the average soil composition in German grasslands?",
-    "reason": "Soil type can impact the color of grass due to nutrient availability.",
-    "id": 2
+    "question": "What is the soil composition in Germany?",
+    "reason": "Soil type impacts nutrient availability and therefore grass color."
   },
   {
-    "question": "Are there regional variations in grass species within Germany?",
-    "reason": "Different regions have different climates and soil conditions which affect grass color.",
-    "id": 3
+    "question": "Are there regional variations in grass species due to climate?",
+    "reason": "Climate differences (temperature, rainfall) affect grass growth and color."
   },
   {
-    "question": "What is the role of chlorophyll in grass?",
-    "reason": "Chlorophyll is the pigment responsible for the green color in plants.",
-    "id": 4
+    "question": "What is the typical stage of growth for grass in Germany?",
+    "reason": "Young grass and mature grass have different colors."
   },
   {
-    "question": "Are there any factors that might cause grass to appear different colors (e.g., disease, drought)?",
-    "reason": "Environmental stressors can alter chlorophyll levels and affect grass color.",
-    "id": 5
+    "question": "What are the common factors that influence grass color (e.g., disease, drought)?",
+    "reason": "These factors can significantly alter grass color."
   },
   {
-    "question": "What is the standard color grading used for scientific analysis of plant pigments?",
-    "reason": "Understanding color measurement techniques is important for accurate assessment.",
-    "id": 6
+    "question": "What is the average chlorophyll content in German grass species?",
+    "reason": "Chlorophyll is the primary pigment responsible for green color."
   },
   {
-    "question": "What is the typical color of grass in other European countries with similar climates?",
-    "reason": "Comparing with similar environments can provide a baseline.",
-    "id": 7
+    "question": "How does fertilization affect grass color?",
+    "reason": "Nutrient levels influence pigment production."
   },
   {
-    "question": "How does age affect the color of grass?",
-    "reason": "Younger grass may have a different color profile compared to mature grass.",
-    "id": 8
+    "question": "Are there any specific cultivars of grass commonly grown in Germany that have distinct color variations?",
+    "reason": "Cultivar selection can impact color."
   },
   {
-    "question": "Are there any cultivars of grass commonly grown in Germany that have altered pigmentation?",
-    "reason": "Specific grass varieties can have different color characteristics.",
-    "id": 9
+    "question": "What is the standard color measurement scale used to assess grass color?",
+    "reason": "Need a consistent method for evaluating color."
   }
 ]

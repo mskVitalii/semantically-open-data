@@ -4,6 +4,7 @@ from typing import Optional
 import aiohttp
 from aiohttp import TCPConnector, ClientTimeout
 
+from src.domain.services.llm_dto import LLMQuestion
 from src.infrastructure.config import LLM_URL
 from src.infrastructure.logger import get_prefixed_logger
 from src.utils.llm_utils import extract_json
@@ -74,7 +75,7 @@ class LLMService:
 
     # region REQUESTS
 
-    async def get_research_questions(self, initial_question) -> list[str]:
+    async def get_research_questions(self, initial_question) -> list[LLMQuestion]:
         prompt = f"""
         Question: {initial_question}.
         Generate N research questions you would need to know to answer the question.
@@ -90,7 +91,11 @@ class LLMService:
         ]
         """
         result = await self.ollama_by_api(prompt)
-        return result
+        try:
+            return [LLMQuestion(**item) for item in result]
+        except Exception as e:
+            logger.error(f"Failed to parse research questions: {e}", exc_info=True)
+            raise
 
     # endregion
 

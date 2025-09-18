@@ -36,8 +36,8 @@ class LLMQuestionWithEmbeddings(LLMQuestion):
 
     def to_dict(self) -> dict:
         data = asdict(self)
-        data["question_hash"] = self.question_hash
         data["embeddings"] = self.embeddings.tolist()
+        data.pop("question_hash", None)
         data.pop("reason", None)
         return data
 

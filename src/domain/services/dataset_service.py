@@ -3,7 +3,7 @@ from fastapi import Depends
 from numpy import ndarray
 
 from src.datasets.bootstrap import bootstrap_data
-from src.datasets.datasets_metadata import DatasetMetadataWithFields
+from src.datasets.datasets_metadata import DatasetMetadataWithFields, make_field
 from src.domain.repositories.dataset_repository import (
     DatasetRepository,
     get_dataset_repository,
@@ -76,19 +76,26 @@ class DatasetService:
     async def search_datasets_with_embeddings(
         self, embeddings: ndarray
     ) -> list[DatasetResponse]:
-        """Search for datasets"""
         datasets = await self.vector_db.search(embeddings)
 
-        logger.info(datasets)
-        return [
-            DatasetResponse(
-                metadata=DatasetMetadataWithFields(
-                    **{k: v for k, v in dataset.payload.items() if k != "content"}
-                ),
-                score=dataset.score,
+        results = []
+        for dataset in datasets:
+            payload = dict(dataset.payload)
+            raw_fields = payload.pop("fields", {})
+
+            metadata = DatasetMetadataWithFields(
+                **payload,
+                fields={k: make_field(v) for k, v in raw_fields.items()},
             )
-            for dataset in datasets
-        ]
+
+            results.append(
+                DatasetResponse(
+                    metadata=metadata,
+                    score=dataset.score,
+                )
+            )
+
+        return results
 
     async def bootstrap_datasets(self) -> bool:
         """Bootstrap datasets - clear and reload all data"""

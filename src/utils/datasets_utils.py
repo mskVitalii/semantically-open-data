@@ -12,6 +12,9 @@ from scipy import stats
 import warnings
 
 from src.datasets.datasets_metadata import Field, FieldString, FieldDate, FieldNumeric
+from src.infrastructure.logger import get_prefixed_logger
+
+logger = get_prefixed_logger(__name__, "DATASET_UTILS")
 
 
 def safe_delete(path: Path, logger: Logger | logging.LoggerAdapter):
@@ -79,43 +82,49 @@ def flatten_dict(d, parent_key="", sep="."):
 
 
 def detect_distribution(series: np.ndarray, min_size: int = 30) -> str:
-    data = series.astype(float)
+    try:
+        data = series.astype(float)
 
-    if len(data) < min_size:
-        return "none"
-
-    if np.ptp(data) == 0:  # range = max - min
-        return "none"
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        if len(data) <= 5000:
-            stat, p_norm = stats.shapiro(data)
-            if p_norm > 0.05:
-                return "norm"
-        else:
-            stat, p_norm = stats.kstest(data, "norm", args=(data.mean(), data.std()))
-            if p_norm > 0.05:
-                return "norm"
-
-    f = Fitter(data.tolist(), distributions=["expon", "lognorm", "gamma"])
-    f.fit()
-    best = f.get_best(method="sumsquare_error")
-    if not best:
-        return "none"
-
-    name = list(best.keys())[0]
-    min_error = f.summary().sumsquare_error.min()
-
-    if min_error > 0.01:
-        return "none"
-
-    if name == "expon":
-        stat, p_exp = stats.kstest(data, "expon", args=(data.min(), data.std()))
-        if p_exp < 0.05:
+        if len(data) < min_size:
             return "none"
 
-    return name
+        if np.ptp(data) == 0:  # range = max - min
+            return "none"
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            if len(data) <= 5000:
+                stat, p_norm = stats.shapiro(data)
+                if p_norm > 0.05:
+                    return "norm"
+            else:
+                stat, p_norm = stats.kstest(
+                    data, "norm", args=(data.mean(), data.std())
+                )
+                if p_norm > 0.05:
+                    return "norm"
+
+        f = Fitter(data.tolist(), distributions=["expon", "lognorm", "gamma"])
+        f.fit()
+        best = f.get_best(method="sumsquare_error")
+        if not best:
+            return "none"
+
+        name = list(best.keys())[0]
+        min_error = f.summary().sumsquare_error.min()
+
+        if min_error > 0.01:
+            return "none"
+
+        if name == "expon":
+            stat, p_exp = stats.kstest(data, "expon", args=(data.min(), data.std()))
+            if p_exp < 0.05:
+                return "none"
+
+        return name
+    except Exception:
+        logger.error("Error detecting distribution => none", exc_info=True)
+        return "none"
 
 
 def safe_unique_count(values: list[Any]) -> int:

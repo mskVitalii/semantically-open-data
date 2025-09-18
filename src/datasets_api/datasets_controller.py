@@ -4,10 +4,14 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Query
 from starlette.responses import StreamingResponse
 
-from .datasets_dto import DatasetSearchRequest, DatasetSearchResponse, DatasetResponse
+from .datasets_dto import DatasetSearchRequest, DatasetSearchResponse
 from .qa_cache.qa_cache import check_qa_cache, set_qa_cache
 from ..domain.services.dataset_service import DatasetService, get_dataset_service
-from ..domain.services.llm_dto import LLMQuestion, LLMQuestionWithEmbeddings
+from ..domain.services.llm_dto import (
+    LLMQuestion,
+    LLMQuestionWithEmbeddings,
+    LLMQuestionWithDatasets,
+)
 from ..domain.services.llm_service import (
     LLMService,
     get_llm_service_dep,
@@ -159,12 +163,18 @@ async def generate_events(
         logger.info(f"step: {step}. VECTOR SEARCH start")
         start_2 = time.perf_counter()
 
-        result_datasets: list[DatasetResponse] = []
+        result_datasets: list[LLMQuestionWithDatasets] = []
         for i, embedding in enumerate(embeddings):
             datasets = await datasets_service.search_datasets_with_embeddings(
                 embedding.embeddings
             )
-            result_datasets.extend(datasets)
+            result_datasets.append(
+                LLMQuestionWithDatasets(
+                    question=embedding.question,
+                    reason=embedding.reason,
+                    datasets=datasets,
+                )
+            )
             yield f"data: {
                 json.dumps(
                     {
@@ -172,7 +182,7 @@ async def generate_events(
                         'sub_step': i,
                         'status': 'OK',
                         'data': {
-                            'id': i,
+                            'hash': embedding.question_hash,
                             'datasets': [ds.to_dict() for ds in datasets],
                         },
                     }

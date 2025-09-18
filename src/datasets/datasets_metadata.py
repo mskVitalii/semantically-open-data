@@ -1,4 +1,5 @@
 import json
+import math
 from abc import ABC
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
@@ -116,6 +117,32 @@ class FieldDate(Field):
     mean: datetime
 
 
+def safe_value(val):
+    if val is None:
+        return ""
+    if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+        return 0.0
+    if isinstance(val, datetime):
+        return val.isoformat()
+    if isinstance(val, list):
+        return [safe_value(v) for v in val]
+    if isinstance(val, dict):
+        return {k: safe_value(v) for k, v in val.items()}
+    return val
+
+
+def make_field(data: dict) -> Field:
+    type_map = {
+        "Numeric": FieldNumeric,
+        "String": FieldString,
+        "Date": FieldDate,
+    }
+    cls = type_map.get(data.get("type"))
+    if not cls:
+        raise ValueError(f"Unknown field type: {data}")
+    return cls(**{k: v for k, v in data.items() if k != "type"})
+
+
 @dataclass
 class DatasetMetadataWithFields(DatasetMetadata):
     """Dataset metadata with additional content field"""
@@ -134,7 +161,10 @@ class DatasetMetadataWithFields(DatasetMetadata):
     def to_payload(self) -> dict[str, Any]:
         """Convert to Qdrant payload including content"""
         payload = super().to_payload()
-        payload["fields"] = {f: self.fields[f].to_json() for f in self.fields}
+        if self.fields:
+            payload["fields"] = {
+                k: safe_value(v.to_dict()) for k, v in self.fields.items()
+            }
         return payload
 
     def to_json(self) -> str:

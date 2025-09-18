@@ -259,7 +259,7 @@ class Leipzig(BaseDataDownloader):
             return success
 
         except Exception as e:
-            self.logger.error(f"\t❌ Error processing package: {e}")
+            self.logger.error(f"\t❌ Error processing package: {e}", exc_info=True)
             await self.update_stats("errors")
             return False
 

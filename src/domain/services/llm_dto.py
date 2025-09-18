@@ -34,6 +34,13 @@ class LLMQuestionWithEmbeddings(LLMQuestion):
         data.pop("reason", None)
         return json.dumps(data)
 
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        data["question_hash"] = self.question_hash
+        data["embeddings"] = self.embeddings.tolist()
+        data.pop("reason", None)
+        return data
+
 
 @dataclass
 class LLMQuestionWithDatasets(LLMQuestion):

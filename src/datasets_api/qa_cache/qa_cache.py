@@ -36,7 +36,7 @@ async def check_qa_cache(query: str, step: int) -> Optional[dict]:
         else:
             return None
     except (json.JSONDecodeError, IOError) as e:
-        logger.error(f"Cache read error for {filepath}: {e}")
+        logger.error(f"Cache read error for {filepath}: {e}", exc_info=True)
         return None
 
 

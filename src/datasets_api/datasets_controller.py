@@ -1,6 +1,7 @@
 import json
 import time
 
+import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
 from starlette.responses import StreamingResponse
 
@@ -18,7 +19,7 @@ from ..domain.services.llm_service import (
 )
 from ..infrastructure.config import IS_DOCKER
 from ..infrastructure.logger import get_prefixed_logger
-from ..vector_search.embedder import embed_batch
+from ..vector_search.embedder import embed_batch_with_ids
 
 logger = get_prefixed_logger("API /datasets")
 
@@ -84,13 +85,22 @@ async def step_1_embeddings(
     logger.info(f"step: {step}. EMBEDDINGS start")
     start_1 = time.perf_counter()
 
-    questions_list = [q.question for q in research_questions]
-    # TODO: keep ids
-    embeddings = await embed_batch(questions_list)
-    questions_with_embeddings: list[LLMQuestionWithEmbeddings] = [
-        LLMQuestionWithEmbeddings(**q.to_dict(), embeddings=embeddings[i])
-        for i, q in enumerate(research_questions)
+    questions_list = [
+        {"text": q.question, "id": q.question_hash} for q in research_questions
     ]
+    embeddings = await embed_batch_with_ids(questions_list)
+
+    embeddings_map: dict[str, np.ndarray] = {
+        str(e["id"]): e["embedding"] for e in embeddings
+    }
+
+    questions_with_embeddings: list[LLMQuestionWithEmbeddings] = [
+        LLMQuestionWithEmbeddings(
+            **q.to_dict(), embeddings=embeddings_map.get(q.question_hash)
+        )
+        for q in research_questions
+    ]
+
     elapsed_1 = time.perf_counter() - start_1
     logger.info(f"step: {step}. EMBEDDINGS end (elapsed: {elapsed_1:.2f}s)")
     return questions_with_embeddings
@@ -188,7 +198,7 @@ async def generate_events(
                     }
                 )
             }\n\n"
-        logger.info(result_datasets)
+        # logger.info(result_datasets)
         elapsed_2 = time.perf_counter() - start_2
         logger.info(f"step: {step}. VECTOR SEARCH end (elapsed: {elapsed_2:.2f}s)")
         step += 1
@@ -197,7 +207,6 @@ async def generate_events(
         # region 3. MONGO REQUESTS & RESPONSES
         # TODO: 3.1 which field
 
-        # TODO: 3.2 which operation
         # 3.1 определить для каждого запроса, что может быть - среднее / сумма
 
         # endregion

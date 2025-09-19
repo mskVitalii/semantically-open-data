@@ -31,5 +31,6 @@ MONGODB_URI = os.getenv(
 LLM_HOST = os.getenv("LLM_HOST", "localhost")
 LLM_PORT = int(os.getenv("LLM_PORT", 11434))
 LLM_URL = f"http://{LLM_HOST}:{LLM_PORT}"
+LLM_OPEN_AI_KEY = os.getenv("LLM_OPEN_AI_KEY", "")
 
 os.environ["GRPC_VERBOSITY"] = "NONE"

@@ -134,7 +134,7 @@ class LLMService:
 
     async def answer_research_question(
         self, question: LLMQuestionWithDatasets
-    ) -> list[LLMQuestion]:
+    ) -> list[str]:
         context = question.to_llm_context()
         instructions = """
             ## Analysis Guidelines

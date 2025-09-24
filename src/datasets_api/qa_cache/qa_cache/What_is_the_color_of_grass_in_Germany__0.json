@@ -1,0 +1,62 @@
+[
+  {
+    "question": "What is the operational color label for 'grass' in Germany, and how is it categorized (e.g., green, brown) in vegetation mapping?",
+    "reason": "To define color categories used in any analysis, we rely on standard vegetation color interpretations and map classifications, using datasets such as Sentinel-2 derived greenness indices (NDVI) and land-cover references like CORINE and ATKIS/ALKIS to anchor grass categories in Germany.",
+    "question_hash": "a3eaf0cf990ee8212c9d36abaa41c09de705f14f31375593b4ad65b660c4ab79"
+  },
+  {
+    "question": "Which datasets provide spatially explicit information about grass presence and color indicators across Germany and Saxony?",
+    "reason": "To answer, we need data sources that reveal where grasses occur and how color signals are captured, including Sentinel-2/Landsat greenness, CORINE/inland land-cover (ATKIS/ALKIS), and park/garden inventories.",
+    "question_hash": "86d162efa32cd60b8b6644cd825e8b1cf5ddc1f9ce324c1e51303818cfb0aa60"
+  },
+  {
+    "question": "What spatial resolution is required to distinguish grass areas at the city scale in Chemnitz?",
+    "reason": "Urban grass patches range from lawns to meadow strips; sentinel-2 10 m generally enables city-scale mapping, while Landsat 30 m may blur small patches; higher-resolution data (drone) may be needed for finer detail.",
+    "question_hash": "ad63377c6ec31a6e03279278e0c808325e101783d2c25a8145a7391e26ae6c5c"
+  },
+  {
+    "question": "What temporal resolution is needed to capture seasonal color changes of grass in Germany?",
+    "reason": "Grass color changes with seasons, drought, and management; monthly to biweekly imagery (e.g., Sentinel-2 and Landsat cadence) and climate normals (DWD) inform seasonal baselines.",
+    "question_hash": "2c46635a66aeb3d95915b3d8f3cb677cbd92f2dcac2e0834f2db1e6571889d6a"
+  },
+  {
+    "question": "How do mowing, irrigation, and turf management practices in German cities affect observed grass color, and what datasets document these practices?",
+    "reason": "Management affects color; municipal open data on green spaces, park maintenance records, and city landscaping inventories can help interpret color signals.",
+    "question_hash": "2752ba1d0349a9ba5fd644e5ae40e31eeeb161cfc8bade5d79fc0ec59481bbcc"
+  },
+  {
+    "question": "What baseline year or climatological period should be used to define 'normal' grass color in Saxony?",
+    "reason": "Establishing a baseline requires climate normals (e.g., 1981-2010 or 1991-2020) from DWD or Saxony environmental agencies to contextualize current color signals.",
+    "question_hash": "00a513f138df84bd16a523408885b44bb0626925aac70577ba2e99af2e8204f8"
+  },
+  {
+    "question": "What meteorological and soil moisture datasets are most relevant to interpreting grass color signals in Germany?",
+    "reason": "Weather, precipitation, and soil moisture drive color; use DWD meteorological data, ESA CCI Soil Moisture, and Saxony-specific climate datasets.",
+    "question_hash": "36eaa9292fda6a8b04e5ec6a6de0da8dce6cac9e3b337c56d989bbb17e33f6bb"
+  },
+  {
+    "question": "What atmospheric correction and sensor calibration steps are needed to ensure consistent grass color estimates across time and space in Germany?",
+    "reason": "Consistent color estimation requires radiometric correction (Sen2Cor for Sentinel-2, atmospheric correction, cloud masking) and cross-sensor harmonization.",
+    "question_hash": "7eb3977924eec0cf4fa74e1641d0312a104eadd8f372bb4889f2bfcecdfdd2ad"
+  },
+  {
+    "question": "How do land-cover maps (e.g., CORINE, ATKIS/ALKIS) align with actual grass areas identified in urban Chemnitz datasets?",
+    "reason": "Crosswalks between broad land-cover classes and actual grass areas are needed to interpret color data in context of land use.",
+    "question_hash": "f475fee016933624fbfbbe71530600ba6f55deb53407e6adc9c9c4d7b55554b0"
+  },
+  {
+    "question": "What ground-truth data exist in Saxony to validate grass color interpretations (field surveys, park inventories, citizen science photos)?",
+    "reason": "Validation strengthens interpretation; look for park maintenance records, field surveys, and citizen science datasets.",
+    "question_hash": "1674127390f4dad177c360b9b91e7361c837a2cfc57fefbed144be81cf5696be"
+  },
+  {
+    "question": "Are there regional differences in grass color due to species composition or mowing frequency that would affect Germany-wide conclusions?",
+    "reason": "Different grass species and management regimes influence color signals; regional studies help interpret color differences.",
+    "question_hash": "403019639e344384c3f26bfb44ba176779baa9b4ea6d396d838ce26098ab7ebe"
+  },
+  {
+    "question": "What data pipeline and validation metrics would be appropriate to produce a reproducible grass color map for Chemnitz using local datasets?",
+    "reason": "Outline a reproducible workflow using Sentinel-2/Landsat, ATKIS/CORINE, meteorological data, and ground-truth; validate with confusion matrices and color threshold error metrics.",
+    "question_hash": "d6c8bc9c86f1e457cf2026f01036f00074b2297d453ae3813ae0c3011d35b3ce"
+  }
+]

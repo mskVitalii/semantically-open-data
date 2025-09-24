@@ -18,10 +18,12 @@ class LLMQuestion:
         return hashlib.sha256(self.question.encode()).hexdigest()
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        data["question_hash"] = self.question_hash
+        return data
 
     def to_json(self) -> str:
-        return json.dumps(self.to_dict() | {"question_hash": self.question_hash})
+        return json.dumps(self.to_dict())
 
 
 @dataclass
@@ -39,11 +41,11 @@ class LLMQuestionWithEmbeddings(LLMQuestion):
 
     def to_dict(self) -> dict:
         data = asdict(self)
+        data["question_hash"] = self.question_hash
         if isinstance(self.embeddings, np.ndarray):
             data["embeddings"] = self.embeddings.tolist()
         else:
             data["embeddings"] = self.embeddings
-        data.pop("question_hash", None)
         return data
 
 

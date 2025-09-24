@@ -43,8 +43,8 @@ services:
         condition: service_healthy
       embedder:
         condition: service_started
-      ollama:
-        condition: service_healthy
+#      ollama:
+#        condition: service_healthy
     env_file:
       - .env.prod
     ports:
@@ -77,6 +77,16 @@ services:
     networks:
       - app_network
 
+  web:
+    image: mskkote/open-data-ui:latest
+    ports:
+      - '80:80'
+    environment:
+      - VITE_API_URL=http://app:8000
+    restart: unless-stopped
+    networks:
+      - app_network
+
   mongodb:
     image: mongo:7
     container_name: semantic_open_data_mongodb
@@ -97,35 +107,35 @@ services:
       retries: 3
       start_period: 40s
 
-  ollama:
-      image: ollama/ollama:latest
-      container_name: ollama
-      ports:
-        - "11434:11434"
-      volumes:
-        - ollama_data:/root/.ollama
-        - ./init-ollama.sh:/init-ollama.sh:ro
-      environment:
-        - OLLAMA_HOST=0.0.0.0
-        - OLLAMA_MODELS=gemma3:4b
-      restart: unless-stopped
-      networks:
-        - app_network
-      healthcheck:
-        test: |
-          sh -c "ollama list >/dev/null 2>&1 && \
-                 ollama list 2>/dev/null | grep -q gpt-oss"
-        interval: 30s
-        timeout: 10s
-        retries: 10
-        start_period: 180s
-      deploy:
-        resources:
-          limits:
-            memory: 16G
-          reservations:
-            memory: 14G
-      entrypoint: ["/bin/sh", "/init-ollama.sh"]
+#  ollama:
+#      image: ollama/ollama:latest
+#      container_name: ollama
+#      ports:
+#        - "11434:11434"
+#      volumes:
+#        - ollama_data:/root/.ollama
+#        - ./init-ollama.sh:/init-ollama.sh:ro
+#      environment:
+#        - OLLAMA_HOST=0.0.0.0
+#        - OLLAMA_MODELS=gemma3:4b
+#      restart: unless-stopped
+#      networks:
+#        - app_network
+#      healthcheck:
+#        test: |
+#          sh -c "ollama list >/dev/null 2>&1 && \
+#                 ollama list 2>/dev/null | grep -q gpt-oss"
+#        interval: 30s
+#        timeout: 10s
+#        retries: 10
+#        start_period: 180s
+#      deploy:
+#        resources:
+#          limits:
+#            memory: 16G
+#          reservations:
+#            memory: 14G
+#      entrypoint: ["/bin/sh", "/init-ollama.sh"]
 
 networks:
   app_network:

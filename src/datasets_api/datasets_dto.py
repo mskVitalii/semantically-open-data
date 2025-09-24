@@ -39,7 +39,10 @@ class DatasetResponse(BaseModel):
         )
 
     def to_dict(self):
-        return self.model_dump()
+        data = self.model_dump()
+        if isinstance(self.metadata, DatasetMetadataWithFields):
+            data["metadata"] = self.metadata.to_payload()
+        return data
 
 
 class DatasetSearchResponse(BaseModel):

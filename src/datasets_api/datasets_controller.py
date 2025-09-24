@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from starlette.responses import StreamingResponse
 
 from .datasets_dto import DatasetSearchRequest, DatasetSearchResponse
+from .qa_cache.qa_cache import check_qa_cache, set_qa_cache
 from ..domain.services.dataset_service import DatasetService, get_dataset_service
 from ..domain.services.llm_dto import (
     LLMQuestion,
@@ -16,6 +17,7 @@ from ..domain.services.llm_service import (
     LLMService,
     get_llm_service_dep,
 )
+from ..infrastructure.config import IS_DOCKER
 from ..infrastructure.logger import get_prefixed_logger
 from ..vector_search.embedder import embed_batch_with_ids
 
@@ -112,16 +114,16 @@ async def generate_events(
     step = 0
     try:
         # region 0. LLM QUESTIONS
-        # research_questions: list[LLMQuestion] | None = None
-        # if not IS_DOCKER:
-        #     cached_questions = await check_qa_cache(question, step)
-        #     if cached_questions is not None:
-        #         research_questions = [
-        #             LLMQuestion(cq["question"], reason=cq["reason"])
-        #             for cq in cached_questions
-        #         ]
-        # if research_questions is None:
-        research_questions = await step_0_llm_questions(step, question, llm_service)
+        research_questions: list[LLMQuestion] | None = None
+        if not IS_DOCKER:
+            cached_answer = await check_qa_cache(question, str(step))
+            if cached_answer is not None:
+                research_questions = [
+                    LLMQuestion(cq["question"], reason=cq["reason"])
+                    for cq in cached_answer
+                ]
+        if research_questions is None:
+            research_questions = await step_0_llm_questions(step, question, llm_service)
         yield f"data: {
             json.dumps(
                 {
@@ -129,15 +131,15 @@ async def generate_events(
                     'status': 'OK',
                     'data': {
                         'question': question,
-                        'research_question': [q.to_json() for q in research_questions],
+                        'research_questions': [q.to_dict() for q in research_questions],
                     },
                 }
             )
         }\n\n"
-        # if not IS_DOCKER:
-        #     await set_qa_cache(
-        #         question, step, [q.to_dict() for q in research_questions]
-        #     )
+        if not IS_DOCKER:
+            await set_qa_cache(
+                question, str(step), [q.to_dict() for q in research_questions]
+            )
         step += 1
         # endregion
 
@@ -182,7 +184,7 @@ async def generate_events(
                         'sub_step': i,
                         'status': 'OK',
                         'data': {
-                            'hash': embedding.question_hash,
+                            'question_hash': embedding.question_hash,
                             'datasets': [ds.to_dict() for ds in datasets],
                         },
                     }
@@ -203,7 +205,14 @@ async def generate_events(
         for i, q in enumerate(result_questions_with_datasets):
             start_3_i = time.perf_counter()
             logger.info(f"step: {step}.{str(i)} INTERPRETATION STEP start")
-            answer = await llm_service.answer_research_question(q)
+            answer: list[str] | None = None
+            if not IS_DOCKER:
+                cached_answer = await check_qa_cache(question, f"{step}_{i}")
+                if cached_answer is not None:
+                    answer = cached_answer
+            if answer is None:
+                answer = await llm_service.answer_research_question(q)
+
             logger.info(answer)
             yield f"data: {
                 json.dumps(
@@ -218,6 +227,8 @@ async def generate_events(
                     }
                 )
             }\n\n"
+            if not IS_DOCKER:
+                await set_qa_cache(question, f"{step}_{i}", answer)
             elapsed_3_i = time.perf_counter() - start_3_i
             logger.info(
                 f"step: {step}.{str(i)} INTERPRETATION STEP end (elapsed: {elapsed_3_i:.2f}s)"

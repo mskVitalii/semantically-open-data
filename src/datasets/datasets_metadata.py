@@ -24,7 +24,7 @@ class DatasetMetadata:
     tags: Optional[list[str]] = None
     groups: Optional[list[str]] = None
     url: Optional[str] = None
-    author: Optional[Any] = None
+    author: Optional[str] = None
 
     def to_searchable_text(self) -> str:
         """Combine title and description for embedding"""

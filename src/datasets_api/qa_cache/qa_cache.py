@@ -13,7 +13,7 @@ logger = get_prefixed_logger("QA_CACHE")
 CACHE_DIR = Path(__file__).parent / "qa_cache"
 
 
-async def check_qa_cache(query: str, step: int) -> Optional[dict]:
+async def check_qa_cache(query: str, step: str) -> Optional[Any]:
     """
     Check if cached data exists for the given query and step.
 
@@ -40,7 +40,7 @@ async def check_qa_cache(query: str, step: int) -> Optional[dict]:
         return None
 
 
-async def set_qa_cache(query: str, step: int, value: Any) -> bool:
+async def set_qa_cache(query: str, step: str, value: Any) -> bool:
     """
     Save data to cache as JSON for the given query and step.
 
